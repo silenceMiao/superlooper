@@ -40,6 +40,20 @@ class RenderUserReadmeTest(unittest.TestCase):
         self.assertTrue(source.endswith("\n"))
         self.assertFalse(source.endswith("\n\n"))
 
+    def test_marketplace_rendering_removes_empty_blockquote_line(self):
+        from scripts.render_user_readme import extract_public_readme
+
+        self._write_guide(
+            "<!-- public-readme:start -->\n"
+            "> {{SOURCE_MAINTENANCE_LINKS}}\n"
+            "<!-- public-readme:end -->\n"
+        )
+
+        marketplace = extract_public_readme(self.guide, "marketplace")
+
+        self.assertNotIn("> \n", marketplace)
+        self.assertEqual("\n", marketplace[-1:])
+
     def test_rejects_invalid_markers_and_unknown_audience(self):
         from scripts.render_user_readme import UserReadmeError, extract_public_readme
 

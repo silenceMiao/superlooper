@@ -40,7 +40,11 @@ def extract_public_readme(source_path, audience):
         raise UserReadmeError("README 公开区段不能为空")
 
     for placeholder, replacement in AUDIENCE_REPLACEMENTS[audience].items():
-        rendered = rendered.replace(placeholder, replacement)
+        if replacement:
+            rendered = rendered.replace(placeholder, replacement)
+        else:
+            rendered = rendered.replace(f"> {placeholder}", "")
+            rendered = rendered.replace(placeholder, "")
     if "{{" in rendered or "}}" in rendered:
         raise UserReadmeError("README 公开区段包含未知占位符")
     return rendered + "\n"
