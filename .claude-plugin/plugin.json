@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "superlooper",
+  "displayName": "Superlooper",
+  "version": "1.1.1",
+  "description": "AI parallel orchestration workflow for Claude Code.",
+  "author": {
+    "name": "zh-miao",
+    "organization": "DQ-wings"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "agents",
+    "orchestration",
+    "parallel-development"
+  ],
+  "skills": "./skills/",
+  "commands": "./commands/"
+}

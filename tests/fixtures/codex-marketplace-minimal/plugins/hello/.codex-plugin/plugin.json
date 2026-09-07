@@ -1,0 +1,21 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "Minimal local Codex marketplace fixture skill.",
+  "author": {
+    "name": "Superlooper Fixture"
+  },
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hello Fixture",
+    "shortDescription": "Minimal Codex fixture skill",
+    "longDescription": "A local fixture that verifies Codex marketplace installation and skill discovery.",
+    "developerName": "Superlooper Fixture",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": ["Run the hello fixture skill."],
+    "brandColor": "#111111",
+    "screenshots": []
+  }
+}

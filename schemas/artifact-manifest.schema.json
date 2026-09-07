@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superlooper.local/schemas/artifact-manifest.schema.json",
+  "title": "SUPERLOOPER Artifact Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "module_id", "agent", "status", "produced_files", "verification", "notes"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "module_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": ["success", "failed", "blocked"]
+    },
+    "produced_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind", "operation", "required_for_merge"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["code", "config", "test", "doc", "asset", "other"] },
+          "operation": { "enum": ["create", "modify"] },
+          "required_for_merge": { "type": "boolean" }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands", "summary"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command", "status", "summary"],
+            "properties": {
+              "command": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["passed", "failed", "skipped"] },
+              "summary": { "type": "string" }
+            }
+          }
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

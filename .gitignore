@@ -1,0 +1,20 @@
+# Local Claude Code development context
+.claude/
+
+# Superlooper runtime outputs
+.superlooper/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Build artifacts
+dist/
+
+# Local development knowledge and release guidance
+.learnings/
+docs/superpowers/
+
+# Local environment files
+.env
+.env.*

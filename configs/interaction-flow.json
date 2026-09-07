@@ -1,0 +1,261 @@
+{
+  "version": "1.0.0",
+  "initialization_options": {
+    "java": ["jdk-8", "jdk-11", "jdk-17"],
+    "go": ["go-1.25"],
+    "springboot": ["springboot-2.x", "springboot-3.x"],
+    "pom": ["maven-3.5.x", "maven-3.9.x"],
+    "lua": ["lua-4.x", "lua-5.x"]
+  },
+  "commands": [
+    {
+      "name": "/spl",
+      "phase": "init",
+      "exposed": true
+    },
+    {
+      "name": "/spl:prd",
+      "phase": "prd",
+      "exposed": true
+    },
+    {
+      "name": "/spl:ui",
+      "phase": "ui_design",
+      "exposed": true
+    },
+    {
+      "name": "/spl:design",
+      "phase": "design",
+      "exposed": true
+    },
+    {
+      "name": "/spl:run",
+      "phase": "run",
+      "exposed": true
+    },
+    {
+      "name": "/spl:status",
+      "phase": "status",
+      "exposed": true
+    },
+    {
+      "name": "/spl:resume",
+      "phase": "resume",
+      "exposed": true
+    },
+    {
+      "name": "/spl:doctor",
+      "phase": "doctor",
+      "exposed": true
+    }
+  ],
+  "phases": [
+    {
+      "id": "prd",
+      "entry_command": "/spl:prd",
+      "allowed_replies": [
+        "已确认，重新生成 PRD",
+        "PRD未通过，按反馈重新分析",
+        "通过，进入 UI 设计"
+      ],
+      "canonical_actions": [
+        {
+          "name": "prd_decisions_confirmed",
+          "canonical_reply": "已确认，重新生成 PRD",
+          "aliases": ["已确认", "重新生成 PRD", "决策确认完成"],
+          "requires_feedback": false
+        },
+        {
+          "name": "prd_revision_requested",
+          "canonical_reply": "PRD未通过，按反馈重新分析",
+          "aliases": ["prd不符合", "重新生成prd", "重新分析需求", "补充需求", "追加需求"],
+          "requires_feedback": true
+        },
+        {
+          "name": "approve_and_proceed",
+          "canonical_reply": "通过，进入 UI 设计",
+          "aliases": ["通过", "确认", "进入ui设计", "进入 UI 设计"],
+          "requires_feedback": false
+        }
+      ],
+      "next_phase": "ui_design"
+    },
+    {
+      "id": "ui_design",
+      "entry_command": "/spl:ui",
+      "allowed_replies": [
+        "UI设计未通过，按反馈重新设计",
+        "UI设计通过，进入系统设计",
+        "需求变更，返回 PRD 修订"
+      ],
+      "canonical_actions": [
+        {
+          "name": "ui_revision_requested",
+          "canonical_reply": "UI设计未通过，按反馈重新设计",
+          "aliases": ["ui不符合", "界面不符合", "页面不对", "交互不对", "预览不对", "重新设计ui"],
+          "requires_feedback": true
+        },
+        {
+          "name": "approve_ui_and_proceed",
+          "canonical_reply": "UI设计通过，进入系统设计",
+          "aliases": ["ui通过", "界面通过", "预览通过", "进入系统设计"],
+          "requires_feedback": false
+        },
+        {
+          "name": "prd_revision_requested",
+          "canonical_reply": "需求变更，返回 PRD 修订",
+          "aliases": ["需求变更", "需求要改", "返回prd", "回到需求"],
+          "requires_feedback": true
+        }
+      ],
+      "next_phase": "design"
+    },
+    {
+      "id": "design",
+      "entry_command": "/spl:design",
+      "allowed_replies": [
+        "继续任务",
+        "生成执行清单",
+        "设计未通过，按反馈重新设计",
+        "需求变更，执行影响分析",
+        "选择初始化项目分类",
+        "选择初始化项目版本",
+        "java",
+        "go",
+        "springboot",
+        "pom",
+        "lua",
+        "jdk-8",
+        "jdk-11",
+        "jdk-17",
+        "go-1.25",
+        "springboot-2.x",
+        "springboot-3.x",
+        "maven-3.5.x",
+        "maven-3.9.x",
+        "lua-4.x",
+        "lua-5.x"
+      ],
+      "canonical_actions": [
+        {
+          "name": "continue_current_flow",
+          "canonical_reply": "继续任务",
+          "aliases": ["继续", "继续任务", "接着做", "生成执行清单"],
+          "requires_feedback": false
+        },
+        {
+          "name": "design_revision_requested",
+          "canonical_reply": "设计未通过，按反馈重新设计",
+          "aliases": ["设计不符合", "重新设计", "架构不符合", "接口设计不对"],
+          "requires_feedback": true
+        },
+        {
+          "name": "change_impact_requested",
+          "canonical_reply": "需求变更，执行影响分析",
+          "aliases": ["需求变更", "设计变更", "设计要改", "需求要改"],
+          "requires_feedback": true
+        },
+        {
+          "name": "select_project_category",
+          "canonical_reply": "选择初始化项目分类",
+          "aliases": ["java", "go", "springboot", "pom", "lua"],
+          "requires_feedback": false
+        },
+        {
+          "name": "select_project_version",
+          "canonical_reply": "选择初始化项目版本",
+          "aliases": ["jdk-8", "jdk-11", "jdk-17", "go-1.25", "springboot-2.x", "springboot-3.x", "maven-3.5.x", "maven-3.9.x", "lua-4.x", "lua-5.x"],
+          "requires_feedback": false
+        }
+      ],
+      "next_phase": "run"
+    },
+    {
+      "id": "run",
+      "entry_command": "/spl:run",
+      "allowed_replies": [
+        "执行",
+        "开始并行开发",
+        "按此执行",
+        "执行摘要未通过，返回修正",
+        "需求变更，执行影响分析",
+        "影响分析通过，执行局部重跑",
+        "影响分析不通过，人工处理",
+        "代码审查未通过，返回修正",
+        "测试未通过，返回修正",
+        "应用冲突已处理，重新应用",
+        "需求校对通过，完成交付",
+        "需求校对未通过，返回修正"
+      ],
+      "canonical_actions": [
+        {
+          "name": "execution_summary_approved",
+          "canonical_reply": "按此执行",
+          "aliases": ["按此执行", "执行摘要通过", "摘要没问题", "确认执行摘要", "按摘要执行"],
+          "requires_feedback": false
+        },
+        {
+          "name": "execution_summary_revision_requested",
+          "canonical_reply": "执行摘要未通过，返回修正",
+          "aliases": ["执行摘要未通过", "摘要不通过", "摘要不对", "执行风险不接受"],
+          "requires_feedback": true
+        },
+        {
+          "name": "start_execution",
+          "canonical_reply": "执行",
+          "aliases": ["执行", "开始开发", "开始并行开发"],
+          "requires_feedback": false
+        },
+        {
+          "name": "change_impact_requested",
+          "canonical_reply": "需求变更，执行影响分析",
+          "aliases": ["需求变更", "设计变更", "prd要调整", "测试后发现"],
+          "requires_feedback": true
+        },
+        {
+          "name": "local_rerun_approved",
+          "canonical_reply": "影响分析通过，执行局部重跑",
+          "aliases": ["影响分析通过", "局部重跑", "按影响分析继续"],
+          "requires_feedback": false
+        },
+        {
+          "name": "manual_handling_requested",
+          "canonical_reply": "影响分析不通过，人工处理",
+          "aliases": ["影响分析不通过", "人工处理", "不要自动"],
+          "requires_feedback": false
+        },
+        {
+          "name": "code_review_revision_requested",
+          "canonical_reply": "代码审查未通过，返回修正",
+          "aliases": ["代码审查未通过", "代码评审未通过", "审查未通过", "code review未通过"],
+          "requires_feedback": true
+        },
+        {
+          "name": "test_revision_requested",
+          "canonical_reply": "测试未通过，返回修正",
+          "aliases": ["测试未通过", "测试不通过", "测试失败", "集成测试未通过"],
+          "requires_feedback": true
+        },
+        {
+          "name": "apply_retry_requested",
+          "canonical_reply": "应用冲突已处理，重新应用",
+          "aliases": ["应用冲突已处理", "冲突已处理", "重新应用", "重试应用"],
+          "requires_feedback": false
+        },
+        {
+          "name": "requirement_alignment_approved",
+          "canonical_reply": "需求校对通过，完成交付",
+          "aliases": ["需求校对通过", "完成交付", "可以交付"],
+          "requires_feedback": false
+        },
+        {
+          "name": "requirement_alignment_revision_requested",
+          "canonical_reply": "需求校对未通过，返回修正",
+          "aliases": ["需求校对未通过", "校对不通过", "需求没满足", "返回修正", "验收不通过"],
+          "requires_feedback": true
+        }
+      ],
+      "next_phase": null
+    }
+  ]
+}

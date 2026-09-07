@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superlooper.local/schemas/execution-manifest.schema.json",
+  "title": "SUPERLOOPER Execution Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "granularity", "context", "dag"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "granularity": {
+      "const": "module"
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "prd_path",
+        "design_docs_path",
+        "module_split_path",
+        "agents_path",
+        "runtime_agents_path",
+        "outputs_path",
+        "merged_path",
+        "reports_path"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": ["platform_registration"]
+          },
+          "then": {
+            "not": {
+              "required": ["registered_agents_path"]
+            }
+          },
+          "else": {
+            "required": ["registered_agents_path"]
+          }
+        }
+      ],
+      "properties": {
+        "prd_path": { "type": "string", "minLength": 1 },
+        "design_docs_path": { "type": "string", "minLength": 1 },
+        "module_split_path": { "type": "string", "minLength": 1 },
+        "agents_path": { "type": "string", "minLength": 1 },
+        "runtime_agents_path": { "type": "string", "minLength": 1 },
+        "registered_agents_path": { "type": "string", "minLength": 1 },
+        "platform_registration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["platform"],
+          "properties": {
+            "platform": { "const": "codex" }
+          }
+        },
+        "outputs_path": { "type": "string", "minLength": 1 },
+        "merged_path": { "type": "string", "minLength": 1 },
+        "reports_path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "dag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "agent", "depends_on", "payload"],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "id": { "pattern": "^mod_" }
+                  },
+                  "required": ["id"]
+                },
+                "then": {
+                  "properties": {
+                    "payload": { "type": "object", "minProperties": 1 }
+                  }
+                }
+              }
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^(mod_[a-z][a-z0-9_]*|task_[a-z0-9_]+)$",
+                "not": { "enum": ["mod_feature_a", "mod_feature_b", "mod_module_a", "mod_module_b"] }
+              },
+              "agent": {
+                "type": "string",
+                "pattern": "^(module_[a-z][a-z0-9_]*|code-reviewer|system_merger|tester|workspace_applier)$"
+              },
+              "depends_on": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "payload": {
+                "oneOf": [
+                  { "type": "string", "minLength": 1 },
+                  { "type": "object", "minProperties": 1 }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

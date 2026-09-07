@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superlooper.local/schemas/module-split.schema.json",
+  "title": "SUPERLOOPER Module Split",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_name", "modules"],
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend_type": { "type": "string", "minLength": 1 },
+        "language": { "type": "string", "minLength": 1 },
+        "build_tool": { "type": "string", "minLength": 1 },
+        "base_package": { "type": "string", "minLength": 1 },
+        "project_mode": { "enum": ["greenfield", "brownfield", "brownfield-selective", "single_change", "ambiguous"] },
+        "source_roots": { "type": "array", "items": { "type": "string" } },
+        "test_roots": { "type": "array", "items": { "type": "string" } },
+        "config_roots": { "type": "array", "items": { "type": "string" } },
+        "mapper_roots": { "type": "array", "items": { "type": "string" } },
+        "layer_conventions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "controller_dirs": { "type": "array", "items": { "type": "string" } },
+            "service_dirs": { "type": "array", "items": { "type": "string" } },
+            "service_impl_dirs": { "type": "array", "items": { "type": "string" } },
+            "dao_dirs": { "type": "array", "items": { "type": "string" } },
+            "module_dirs": { "type": "array", "items": { "type": "string" } },
+            "module_subdirs": { "type": "array", "items": { "type": "string" } },
+            "utils_dirs": { "type": "array", "items": { "type": "string" } },
+            "utils_subdirs": { "type": "array", "items": { "type": "string" } },
+            "mapper_xml_dirs": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "description", "referenced_tables", "referenced_apis"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "not": { "enum": ["feature_a", "feature_b", "module_a", "module_b"] }
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "referenced_tables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "referenced_apis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requirement_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^REQ-[0-9]{3,}$"
+            }
+          },
+          "decision_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^DEC-[0-9]{3,}$"
+            }
+          },
+          "open_question_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^OPEN-[0-9]{3,}$"
+            }
+          },
+          "acceptance_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^AC-[0-9]{3,}$"
+            }
+          },
+          "ui_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "interaction_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "component_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "ui_acceptance_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allowed_existing_files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "forbidden_files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "integration_points": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "test_commands": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "overwrite_policy": {
+            "enum": ["block_by_default"]
+          },
+          "test_focus": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "depends_on_modules": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            }
+          },
+          "target_files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "file_roles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "role"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "controller",
+                    "service",
+                    "service_impl",
+                    "dao",
+                    "module_beans",
+                    "module_common",
+                    "module_aop",
+                    "module_core",
+                    "module_vo",
+                    "module_security",
+                    "module_log",
+                    "utils_inner",
+                    "utils_outer",
+                    "mapper_xml",
+                    "test",
+                    "config",
+                    "other"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

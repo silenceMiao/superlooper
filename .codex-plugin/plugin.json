@@ -1,0 +1,22 @@
+{
+  "name": "superlooper",
+  "version": "1.1.1",
+  "description": "AI parallel orchestration workflow for Claude Code and Codex.",
+  "author": {
+    "name": "zh-miao",
+    "organization": "DQ-wings"
+  },
+  "license": "MIT",
+  "skills": "./codex/skills/",
+  "interface": {
+    "displayName": "Superlooper",
+    "shortDescription": "AI parallel orchestration workflow",
+    "longDescription": "A shared Superlooper workflow for Claude Code and Codex.",
+    "developerName": "DQ-wings",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": ["Run the Superlooper workflow."],
+    "brandColor": "#111111",
+    "screenshots": []
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://superlooper.local/schemas/interaction-flow.schema.json",
+  "title": "SUPERLOOPER Interaction Flow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "initialization_options", "commands", "phases"],
+  "properties": {
+    "version": { "type": "string", "minLength": 1 },
+    "initialization_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["java", "go", "springboot", "pom", "lua"],
+      "properties": {
+        "java": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "go": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "springboot": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "pom": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "lua": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "phase", "exposed"],
+        "properties": {
+          "name": {
+            "allOf": [
+              { "type": "string", "pattern": "^/spl(:[a-z_]+)?$" },
+              { "not": { "const": "/spl:manifest" } }
+            ]
+          },
+          "phase": { "enum": ["init", "prd", "ui_design", "design", "run", "status", "resume", "doctor"] },
+          "exposed": { "type": "boolean" }
+        }
+      }
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "entry_command", "allowed_replies", "canonical_actions", "next_phase"],
+        "properties": {
+          "id": { "enum": ["prd", "ui_design", "design", "run"] },
+          "entry_command": {
+            "allOf": [
+              { "type": "string", "pattern": "^/spl(:[a-z_]+)?$" },
+              { "not": { "const": "/spl:manifest" } }
+            ]
+          },
+          "allowed_replies": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "canonical_actions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "canonical_reply", "aliases", "requires_feedback"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "canonical_reply": { "type": "string", "minLength": 1 },
+                "aliases": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+                "requires_feedback": { "type": "boolean" }
+              }
+            }
+          },
+          "next_phase": { "type": ["string", "null"], "enum": ["prd", "ui_design", "design", "run", null] }
+        }
+      }
+    }
+  }
+}
