@@ -120,25 +120,25 @@ python -m unittest tests.test_interaction_flow tests.test_create_session tests.t
 
 ## 源码、Marketplace 与 GitHub 一致性
 
-`D:\www_21\my-claude\superlooper` 是插件源码、版本、install 文件闭包与用户文档的唯一事实源。`D:\www_21\my-claude\superAI-marketplace` 是独立 Git 发布镜像，不是第二套插件源码。
+`D:\www_21\my-claude\superlooper` 是 Superlooper 的插件源码、版本、install 文件闭包与用户文档事实源。`D:\www_21\my-claude\superAI-marketplace` 是可容纳多个插件的独立 Git 发布市场，不是第二套插件源码。
 
 - `plugins/superlooper/` 必须由 `PluginPackager(mode="install")` 的 `release_files` 生成，不得手工修改。
-- Marketplace 同步仅接管 `README.md`、`.claude-plugin/marketplace.json`、`.agents/plugins/marketplace.json`、`plugins/superlooper/**` 与 `.superlooper-marketplace-sync.json`。
-- 同步账本记录所有受控文件的 SHA-256。账本漂移、受控文件被人工修改、受控区域未知文件或目录、任一受控符号链接均必须阻断同步。
-- 同步不得改写 `.git/`、远程配置、提交历史、其他插件或账本外文件。已有未登记镜像只能经显式 `--adopt-existing` 接管。
-- `docs/USER_GUIDE.md` 是唯一用户文案事实源；`README.md` 与 Marketplace 根 README 必须由 `scripts/render_user_readme.py` 生成。修改用户文案时，同时检查用户指南、渲染器、install closure、Marketplace 同步器和一致性验证器。
+- Marketplace 根 `README.md` 属于 Marketplace 仓库，必须描述市场、目录、插件级边界和双平台安装入口；它不得由 `docs/USER_GUIDE.md` 渲染，也不由 Superlooper 同步器覆盖。
+- `docs/USER_GUIDE.md` 只生成 Superlooper 源码根 `README.md`；安装镜像中的 `plugins/superlooper/README.md` 从 install closure 逐字节派生。
+- v2 同步账本仅记录 `plugins/superlooper/**` 的 SHA-256。插件树的账本漂移、未知文件或目录、符号链接均必须阻断同步。
+- Claude Code 与 Codex 的 Marketplace metadata 是共享 registry。同步器只原位更新或追加唯一的 `superlooper` 条目，保留其他条目的内容和顺序；重复、错误 source、错误市场名称或无效 `plugins` 数组必须阻断。
+- 同步不得改写 `.git/`、远程配置、提交历史、根 README、其他插件或 metadata 中其他条目。无账本镜像只能经显式 `--adopt-existing` 接管；v1 账本必须经 `--migrate-v1` 完整预检后迁移为 v2。
 - 双仓库无法原子推送。只有源码与 Marketplace 两个远程分支 HEAD 分别等于已验证本地 HEAD，且账本 `source_commit` 等于源码 HEAD 时，才能宣布版本已发布完成。
 - Git 提交、推送、remote 修改、仓库初始化和远程创建必须取得当轮明确授权。同步器与验证器不得执行这些操作。
-- 当前源码目录不是 Git 工作树。`verify_release_consistency.py --require-pushed` 必须报告阻断，不得执行 `git init` 或添加 remote。
 
 ## 发布联动检查
 
 | 修改对象 | 必须同时检查 |
 | --- | --- |
-| `docs/USER_GUIDE.md` | `README.md`、`scripts/render_user_readme.py`、install manifest、Marketplace README 与对应测试 |
-| `scripts/render_user_readme.py` | `scripts/package_plugin.py`、`scripts/package_marketplace.py`、`scripts/verify_release_consistency.py`、`tests/test_render_user_readme.py` |
-| `scripts/package_marketplace.py` | install manifest、双平台 Marketplace metadata、同步账本、`tests/test_package_marketplace.py`、`docs/RELEASE.md` |
-| `scripts/verify_release_consistency.py` | 双 manifest、同步账本、README 渲染器、`tests/test_verify_release_consistency.py`、`docs/RELEASE.md` |
+| `docs/USER_GUIDE.md` | `README.md`、`scripts/render_user_readme.py`、install manifest 与对应测试 |
+| `scripts/render_user_readme.py` | `scripts/package_plugin.py`、`tests/test_render_user_readme.py` |
+| `scripts/package_marketplace.py` | install manifest、双平台共享 Marketplace metadata、v2 同步账本、`tests/test_package_marketplace.py`、`tests/test_codex_marketplace.py`、`docs/RELEASE.md` |
+| `scripts/verify_release_consistency.py` | 双 manifest、唯一 Superlooper registry 条目、v2 同步账本、`tests/test_verify_release_consistency.py`、`docs/RELEASE.md` |
 
 ## 发布架构边界
 

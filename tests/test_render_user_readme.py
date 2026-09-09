@@ -16,7 +16,7 @@ class RenderUserReadmeTest(unittest.TestCase):
     def _write_guide(self, content):
         self.guide.write_text(content, encoding="utf-8")
 
-    def test_extracts_public_section_for_both_audiences(self):
+    def test_extracts_public_section_for_source_audience(self):
         from scripts.render_user_readme import extract_public_readme
 
         self._write_guide(
@@ -29,30 +29,12 @@ class RenderUserReadmeTest(unittest.TestCase):
         )
 
         source = extract_public_readme(self.guide, "source")
-        marketplace = extract_public_readme(self.guide, "marketplace")
 
         self.assertIn("(docs/USER_GUIDE.md)", source)
         self.assertIn("[开发说明](docs/DEVELOPMENT.md)", source)
-        self.assertIn("(plugins/superlooper/docs/USER_GUIDE.md)", marketplace)
-        self.assertNotIn("开发说明", marketplace)
         self.assertNotIn("内部开发规则", source)
-        self.assertNotIn("内部开发规则", marketplace)
         self.assertTrue(source.endswith("\n"))
         self.assertFalse(source.endswith("\n\n"))
-
-    def test_marketplace_rendering_removes_empty_blockquote_line(self):
-        from scripts.render_user_readme import extract_public_readme
-
-        self._write_guide(
-            "<!-- public-readme:start -->\n"
-            "> {{SOURCE_MAINTENANCE_LINKS}}\n"
-            "<!-- public-readme:end -->\n"
-        )
-
-        marketplace = extract_public_readme(self.guide, "marketplace")
-
-        self.assertNotIn("> \n", marketplace)
-        self.assertEqual("\n", marketplace[-1:])
 
     def test_rejects_invalid_markers_and_unknown_audience(self):
         from scripts.render_user_readme import UserReadmeError, extract_public_readme
@@ -70,8 +52,10 @@ class RenderUserReadmeTest(unittest.TestCase):
                     extract_public_readme(self.guide, "source")
 
         self._write_guide("<!-- public-readme:start -->\ntext\n<!-- public-readme:end -->")
-        with self.assertRaisesRegex(UserReadmeError, "未知 README 受众"):
-            extract_public_readme(self.guide, "invalid")
+        for audience in ("invalid", "marketplace"):
+            with self.subTest(audience=audience):
+                with self.assertRaisesRegex(UserReadmeError, "未知 README 受众"):
+                    extract_public_readme(self.guide, audience)
 
     def test_render_and_check_detect_drift(self):
         from scripts.render_user_readme import UserReadmeError, assert_user_readme_current, render_user_readme

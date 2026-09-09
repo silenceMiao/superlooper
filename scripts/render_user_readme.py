@@ -11,10 +11,6 @@ AUDIENCE_REPLACEMENTS = {
         "{{USER_GUIDE_LINK}}": "docs/USER_GUIDE.md",
         "{{SOURCE_MAINTENANCE_LINKS}}": "想维护插件源码、发布版本或修改协议：阅读 [开发说明](docs/DEVELOPMENT.md) 与 [发布指南](docs/RELEASE.md)。",
     },
-    "marketplace": {
-        "{{USER_GUIDE_LINK}}": "plugins/superlooper/docs/USER_GUIDE.md",
-        "{{SOURCE_MAINTENANCE_LINKS}}": "",
-    },
 }
 
 

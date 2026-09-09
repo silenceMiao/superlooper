@@ -27,31 +27,41 @@
 
 ## Marketplace distribution
 
-`superlooper` 是版本、install 文件闭包和用户文档的唯一事实源。独立 `superAI-marketplace` 仅保存从 install manifest 派生的发布镜像，不得手工维护 `plugins/superlooper/`。
+`superlooper` 是其版本、install 文件闭包和用户文档的事实源。`superAI-marketplace` 是独立的多插件发布市场：`plugins/superlooper/` 必须从 install manifest 派生，不得手工维护；根 README 和其他插件属于 Marketplace 仓库自身。
 
-新建此前不存在的 Marketplace：
+新建此前不存在的 Marketplace 时，维护者必须显式提供市场概览：
 
 ```bash
-python scripts/package_marketplace.py --target <new-marketplace>
+python scripts/package_marketplace.py \
+  --target <new-marketplace> \
+  --marketplace-readme <marketplace-overview.md>
 ```
 
-`--target` 保持目标必须不存在的安全语义。命令在 target 同级 staging 中复制 install manifest 的 `release_files`，生成 Claude Code `.claude-plugin/marketplace.json` 和 Codex `.agents/plugins/marketplace.json`，再创建 target；失败时只清理本次创建的 staging 或 target。
+`--target` 保持目标必须不存在的安全语义。命令在 target 同级 staging 中复制 install manifest 的 `release_files` 到 `plugins/superlooper/`，生成 Claude Code 与 Codex 的初始 registry、v2 账本，并原样复制 overview 为根 `README.md`。失败时只清理本次创建的 staging 或 target。
 
-同步已有 Marketplace：
+同步已有 v2 Marketplace：
 
 ```bash
 python scripts/package_marketplace.py --sync-target ../superAI-marketplace
 ```
 
-同步只能更新根 `README.md`、双平台 Marketplace metadata、`plugins/superlooper/**` 和 `.superlooper-marketplace-sync.json`。账本记录每个受控文件的 SHA-256；任何账本漂移、人工改动、符号链接、未知文件或未知目录都会阻断同步，脚本不覆盖 `.git/`、其他插件或账本外内容。
+日常同步只替换 `plugins/superlooper/**`、两份 metadata 中唯一的 Superlooper 条目和 `.superlooper-marketplace-sync.json`。v2 账本只记录插件树文件 SHA-256；根 README、其他 metadata 条目、其他插件和 `.git/` 不属于同步器控制范围，也不会被覆盖。metadata 存在多个 Superlooper 条目、错误 Marketplace 名称、非数组 `plugins`、错误 source 或无效 version 时必须阻断。
 
-当前旧 Marketplace 没有账本时，普通同步必须失败。只有完成预检并取得明确授权后，才能一次性接管：
+已有 v1 账本的 Marketplace 必须先完整验证旧账本，再显式迁移：
+
+```bash
+python scripts/package_marketplace.py --sync-target ../superAI-marketplace --migrate-v1
+```
+
+迁移前旧根 README、metadata 或插件树存在任一漂移都会阻断；成功迁移后根 README 仍保持原样。Marketplace 维护者随后可将其恢复为市场概览，例如以 `89a4c57` 的 README 为基线。
+
+没有账本的旧镜像只能经显式接管：
 
 ```bash
 python scripts/package_marketplace.py --sync-target ../superAI-marketplace --adopt-existing
 ```
 
-`--adopt-existing` 仅接受双 plugin manifest 名称为 `superlooper`、没有额外文件、空目录或符号链接的旧插件树。失败时根据冲突清单处理，禁止删除或覆盖来绕过校验。
+`--adopt-existing` 仅接管合法 Superlooper 插件树和双平台 registry，且不能与 `--migrate-v1` 同用。失败时根据冲突清单处理，禁止删除或覆盖来绕过校验。
 
 在非源码临时目标项目执行真实 Claude Code Marketplace E2E 时，按以下顺序安装：
 

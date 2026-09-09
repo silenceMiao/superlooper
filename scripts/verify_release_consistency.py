@@ -9,30 +9,25 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 try:
-    from package_plugin import INSTALL_RUNTIME_REQUIRED_FILES, PluginPackager
+    from package_plugin import INSTALL_RUNTIME_REQUIRED_FILES
     from render_user_readme import UserReadmeError, extract_public_readme
 except ModuleNotFoundError:
-    from scripts.package_plugin import INSTALL_RUNTIME_REQUIRED_FILES, PluginPackager
+    from scripts.package_plugin import INSTALL_RUNTIME_REQUIRED_FILES
     from scripts.render_user_readme import UserReadmeError, extract_public_readme
 
 
 LEDGER_FILE = ".superlooper-marketplace-sync.json"
 LEDGER_KEYS = {"schema_version", "plugin_name", "plugin_version", "source_commit", "managed_paths"}
-MANAGED_ROOT_FILES = {
-    "README.md",
+REGISTRY_PATHS = (
     ".claude-plugin/marketplace.json",
     ".agents/plugins/marketplace.json",
-}
+)
 CONTROLLED_ANCESTORS = {
     ".claude-plugin",
     ".agents",
     ".agents/plugins",
     "plugins",
     "plugins/superlooper",
-}
-CONTROLLED_METADATA_DIRECTORIES = {
-    ".claude-plugin": "marketplace.json",
-    ".agents/plugins": "marketplace.json",
 }
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -57,7 +52,6 @@ def verify_release_consistency(
     marketplace_root = _absolute_path(marketplace_root)
     errors = []
     ledger = None
-
     try:
         source_version = _validate_source(source_root, errors)
         release_files = _validate_install_manifest(source_root, errors)
@@ -78,7 +72,6 @@ def verify_release_consistency(
             )
         except Exception as exc:
             errors.append(f"Git 发布状态检查异常: {exc}")
-
     return VerificationResult(ok=not errors, errors=errors)
 
 
@@ -161,9 +154,9 @@ def _validate_install_manifest(source_root, errors):
 
 
 def _build_install_closure(source_root, errors):
-    if not source_root.is_dir():
-        return set()
     closure = set()
+    if not source_root.is_dir():
+        return closure
     for relative_path in sorted(INSTALL_RUNTIME_REQUIRED_FILES):
         path = source_root / relative_path
         if path.is_symlink() or not path.is_file():
@@ -191,15 +184,13 @@ def _validate_marketplace(source_root, marketplace_root, release_files, source_v
     if marketplace_root.is_symlink() or not marketplace_root.is_dir():
         errors.append("Marketplace 根目录不存在或为符号链接")
         return None
-
-    expected_paths = MANAGED_ROOT_FILES | {f"plugins/superlooper/{relative_path}" for relative_path in release_files}
+    expected_paths = {f"plugins/superlooper/{relative_path}" for relative_path in release_files}
     _validate_controlled_path_links(marketplace_root, expected_paths, errors)
-    _validate_controlled_metadata_trees(marketplace_root, errors)
     ledger = _read_json(marketplace_root / LEDGER_FILE, errors, "同步账本")
     _validate_ledger(marketplace_root, ledger, expected_paths, errors)
 
-    claude_metadata = _read_json(marketplace_root / ".claude-plugin" / "marketplace.json", errors)
-    codex_metadata = _read_json(marketplace_root / ".agents" / "plugins" / "marketplace.json", errors)
+    claude_metadata = _read_json(marketplace_root / REGISTRY_PATHS[0], errors, "Claude Marketplace metadata")
+    codex_metadata = _read_json(marketplace_root / REGISTRY_PATHS[1], errors, "Codex Marketplace metadata")
     plugin_root = marketplace_root / "plugins" / "superlooper"
     plugin_manifest = _read_json(plugin_root / ".claude-plugin" / "plugin.json", errors)
     plugin_codex_manifest = _read_json(plugin_root / ".codex-plugin" / "plugin.json", errors)
@@ -224,9 +215,7 @@ def _validate_marketplace(source_root, marketplace_root, release_files, source_v
     }
     if len(set(versions.values())) != 1:
         errors.append("版本不一致: " + ", ".join(f"{label}={value}" for label, value in versions.items()))
-
     _validate_plugin_tree(source_root, plugin_root, release_files, errors)
-    _validate_marketplace_readme(source_root, marketplace_root / "README.md", errors)
     return ledger if isinstance(ledger, dict) else None
 
 
@@ -252,10 +241,17 @@ def _metadata_entry(metadata, label, errors):
     if metadata.get("name") != "superAI-marketplace":
         errors.append(f"{label} Marketplace metadata name 无效")
     plugins = metadata.get("plugins")
-    if not isinstance(plugins, list) or len(plugins) != 1 or not isinstance(plugins[0], dict):
+    if not isinstance(plugins, list):
         errors.append(f"{label} Marketplace metadata plugins 无效")
         return None
-    return plugins[0]
+    entries = [entry for entry in plugins if isinstance(entry, dict) and entry.get("name") == "superlooper"]
+    if not entries:
+        errors.append(f"{label} Marketplace metadata 缺少 superlooper 条目")
+        return None
+    if len(entries) > 1:
+        errors.append(f"{label} Marketplace metadata 包含重复 superlooper 条目")
+        return None
+    return entries[0]
 
 
 def _validate_metadata_entry(entry, label, errors):
@@ -263,6 +259,8 @@ def _validate_metadata_entry(entry, label, errors):
         return
     if entry.get("name") != "superlooper" or entry.get("source") != "./plugins/superlooper":
         errors.append(f"{label} metadata 插件引用无效")
+    if not isinstance(entry.get("version"), str) or not entry["version"]:
+        errors.append(f"{label} metadata version 无效")
 
 
 def _validate_manifest_against_source(manifest, source_version, label, errors):
@@ -275,36 +273,14 @@ def _entry_value(entry, key):
 
 
 def _validate_controlled_path_links(marketplace_root, expected_paths, errors):
-    paths = set(CONTROLLED_ANCESTORS) | {LEDGER_FILE}
+    paths = set(CONTROLLED_ANCESTORS) | {LEDGER_FILE, *REGISTRY_PATHS}
     for relative_path in expected_paths:
         path = PurePosixPath(relative_path)
-        parents = list(path.parents)
-        paths.update(parent.as_posix() for parent in parents if parent.as_posix() != ".")
+        paths.update(parent.as_posix() for parent in path.parents if parent.as_posix() != ".")
         paths.add(relative_path)
     for relative_path in sorted(paths):
         if (marketplace_root / relative_path).is_symlink():
             errors.append(f"受控路径或祖先不能是符号链接: {relative_path}")
-
-
-def _validate_controlled_metadata_trees(marketplace_root, errors):
-    for relative_directory, metadata_file in CONTROLLED_METADATA_DIRECTORIES.items():
-        directory = marketplace_root / relative_directory
-        if directory.is_symlink() or not directory.is_dir():
-            errors.append(f"受控 metadata 目录不存在或不是普通目录: {relative_directory}")
-            continue
-        actual_files = set()
-        for path in directory.rglob("*"):
-            relative_path = path.relative_to(directory).as_posix()
-            if path.is_symlink():
-                errors.append(f"受控 metadata 目录包含符号链接: {relative_directory}/{relative_path}")
-            elif path.is_file():
-                actual_files.add(relative_path)
-                if relative_path != metadata_file:
-                    errors.append(f"受控 metadata 目录包含未知路径: {relative_directory}/{relative_path}")
-            else:
-                errors.append(f"受控 metadata 目录包含未知路径: {relative_directory}/{relative_path}")
-        if actual_files != {metadata_file}:
-            errors.append(f"受控 metadata 目录文件集无效: {relative_directory}")
 
 
 def _validate_ledger(marketplace_root, ledger, expected_paths, errors):
@@ -312,7 +288,10 @@ def _validate_ledger(marketplace_root, ledger, expected_paths, errors):
         return
     if set(ledger) != LEDGER_KEYS:
         errors.append("同步账本 schema 无效：只允许 schema_version/plugin_name/plugin_version/source_commit/managed_paths")
-    if ledger.get("schema_version") != 1:
+    schema_version = ledger.get("schema_version")
+    if schema_version == 1:
+        errors.append("同步账本为 v1；需要使用 --migrate-v1 迁移")
+    elif schema_version != 2:
         errors.append("同步账本 schema_version 无效")
     if ledger.get("plugin_name") != "superlooper":
         errors.append("同步账本 plugin_name 无效")
@@ -321,7 +300,6 @@ def _validate_ledger(marketplace_root, ledger, expected_paths, errors):
     source_commit = ledger.get("source_commit")
     if source_commit is not None and (not isinstance(source_commit, str) or not COMMIT_PATTERN.fullmatch(source_commit)):
         errors.append("同步账本 source_commit 无效")
-
     managed_paths = ledger.get("managed_paths")
     if not isinstance(managed_paths, dict):
         errors.append("同步账本 managed_paths 无效")
@@ -353,7 +331,7 @@ def _is_managed_path(relative_path):
         and ".." not in path.parts
         and "\\" not in relative_path
         and str(path) == relative_path
-        and (relative_path in MANAGED_ROOT_FILES or relative_path.startswith("plugins/superlooper/"))
+        and relative_path.startswith("plugins/superlooper/")
     )
 
 
@@ -394,18 +372,6 @@ def _validate_plugin_tree(source_root, plugin_root, release_files, errors):
             errors.append(f"Marketplace 插件文件无法比较: {relative_path}: {exc}")
 
 
-def _validate_marketplace_readme(source_root, marketplace_readme, errors):
-    if marketplace_readme.is_symlink() or not marketplace_readme.is_file():
-        errors.append("Marketplace README 缺失或为符号链接")
-        return
-    try:
-        expected = extract_public_readme(source_root / "docs" / "USER_GUIDE.md", "marketplace")
-        if marketplace_readme.read_text(encoding="utf-8") != expected:
-            errors.append("Marketplace README 未由用户指南生成")
-    except (OSError, UserReadmeError) as exc:
-        errors.append(f"Marketplace README 无法验证: {exc}")
-
-
 def _sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -428,26 +394,20 @@ def _validate_git_repository(root, branch, label, git_runner, errors):
         return None
     if status.stdout.strip():
         errors.append(f"{label} Git 工作树不干净")
-
     current_branch = _run_git(git_runner, root, ["rev-parse", "--abbrev-ref", "HEAD"], label, errors)
     branch_ok = current_branch is not None and current_branch.returncode == 0 and current_branch.stdout.strip() == branch
     if not branch_ok:
         errors.append(f"{label} 当前分支不是 {branch}")
-
     head_result = _run_git(git_runner, root, ["rev-parse", "HEAD"], label, errors)
     head = head_result.stdout.strip() if head_result is not None and head_result.returncode == 0 else None
     if head is None or not COMMIT_PATTERN.fullmatch(head):
         errors.append(f"{label} HEAD 无效")
-
     origin = _run_git(git_runner, root, ["remote", "get-url", "origin"], label, errors)
     origin_ok = origin is not None and origin.returncode == 0 and bool(origin.stdout.strip())
     if not origin_ok:
         errors.append(f"{label} 缺少 origin")
-
     remote = _run_git(git_runner, root, ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"], label, errors)
-    remote_sha = None
-    if remote is not None and remote.returncode == 0 and remote.stdout.split():
-        remote_sha = remote.stdout.split()[0]
+    remote_sha = remote.stdout.split()[0] if remote is not None and remote.returncode == 0 and remote.stdout.split() else None
     if head is not None and remote_sha != head:
         errors.append(f"{label} 远程 {branch} HEAD 与本地不一致")
     return head if branch_ok and origin_ok and COMMIT_PATTERN.fullmatch(head or "") else None

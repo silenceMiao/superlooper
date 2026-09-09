@@ -10,6 +10,8 @@ class CodexMarketplaceTest(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name) / "source"
         self.target = Path(self.temp_dir.name) / "marketplace"
+        self.overview = Path(self.temp_dir.name) / "overview.md"
+        self.overview.write_text("# Marketplace\n", encoding="utf-8")
         self._create_source_tree()
 
     def tearDown(self):
@@ -75,7 +77,11 @@ class CodexMarketplaceTest(unittest.TestCase):
                 return 0
 
         with mock.patch.object(package_marketplace, "PluginPackager", FakePackager):
-            package_marketplace.package_marketplace(root=self.root, target=self.target)
+            package_marketplace.package_marketplace(
+                root=self.root,
+                target=self.target,
+                marketplace_readme=self.overview,
+            )
 
         claude_marketplace = json.loads(
             (self.target / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
