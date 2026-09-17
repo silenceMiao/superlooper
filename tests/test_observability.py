@@ -13,7 +13,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
         self.fixtures_root = self.repo_root / "tests" / "fixtures"
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace_root = Path(self.temp_dir.name) / "workspace"
-        self.session_id = "observability_demo"
+        self.task_id = "observability_demo"
         self.requirement_path = self.workspace_root / "requirements.md"
 
     def tearDown(self):
@@ -35,8 +35,8 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "create_session.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--requirement-path",
             str(self.requirement_path),
         )
@@ -45,13 +45,13 @@ class ObservabilityScriptsTest(unittest.TestCase):
     def copy_fixture(self, name):
         shutil.copytree(self.fixtures_root / name / "workspace", self.workspace_root)
 
-    def write_initialized_state(self, session_id):
-        reports_dir = self.workspace_root / ".superlooper" / "reports" / session_id
+    def write_initialized_state(self, task_id):
+        reports_dir = self.workspace_root / ".superlooper" / "reports" / task_id
         reports_dir.mkdir(parents=True, exist_ok=True)
         (reports_dir / "initialization_report.json").write_text(
             json.dumps(
                 {
-                    "session_id": session_id,
+                    "task_id": task_id,
                     "status": "success",
                     "project_category": "springboot",
                     "project_version": "springboot-3.x",
@@ -64,7 +64,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        context_dir = self.workspace_root / ".superlooper" / "context" / session_id
+        context_dir = self.workspace_root / ".superlooper" / "context" / task_id
         for relative_path in (
             "ui/ui-spec.md",
             "ui/page-map.md",
@@ -81,16 +81,18 @@ class ObservabilityScriptsTest(unittest.TestCase):
             artifact_path.write_text("# fixture\n", encoding="utf-8")
         state_dir = self.workspace_root / ".superlooper" / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / f"{session_id}.json").write_text(
+        (state_dir / f"{task_id}.json").write_text(
             json.dumps(
                 {
-                    "session_id": session_id,
+                    "task_id": task_id,
+                    "task_name": None,
                     "workspace_root": str(self.workspace_root.resolve()),
                     "requirement_path": str((self.workspace_root / "requirements.md").resolve()),
                     "current_phase": "run",
                     "phase_status": "pending",
                     "generated_files": [],
                     "reports": [],
+                    "script_events": [],
                     "last_command": "test",
                     "last_error": None,
                     "next_actions": [],
@@ -100,9 +102,9 @@ class ObservabilityScriptsTest(unittest.TestCase):
                     "project_version": "springboot-3.x",
                     "project_root": ".",
                     "project_initialized": True,
-                    "initialization_report": f".superlooper/reports/{session_id}/initialization_report.json",
+                    "initialization_report": f".superlooper/reports/{task_id}/initialization_report.json",
                     "ui_status": "APPROVED",
-                    "ui_output_dir": f".superlooper/context/{session_id}/ui/",
+                    "ui_output_dir": f".superlooper/context/{task_id}/ui/",
                     "ui_artifacts_validated": True,
                     "execution_summary_status": "NOT_STARTED",
                     "execution_summary_report": None,
@@ -116,12 +118,17 @@ class ObservabilityScriptsTest(unittest.TestCase):
                     "requirement_alignment_report": None,
                     "requirement_alignment_passed": False,
                     "prd_revision": 0,
+                    "ui_revision": 0,
                     "design_revision": 0,
                     "change_request_count": 0,
                     "active_feedback_report": None,
                     "change_impact_report": None,
+                    "affected_modules": [],
                     "invalidated_artifacts": [],
                     "rollback_target_phase": None,
+                    "last_user_input_text": None,
+                    "last_user_canonical_action": None,
+                    "pending_user_choice": None,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -131,7 +138,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
         )
 
     def write_report(self, filename, content):
-        report_path = self.workspace_root / ".superlooper" / "reports" / self.session_id / filename
+        report_path = self.workspace_root / ".superlooper" / "reports" / self.task_id / filename
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(content, encoding="utf-8")
         return report_path
@@ -139,31 +146,52 @@ class ObservabilityScriptsTest(unittest.TestCase):
     def write_json_report(self, filename, payload):
         self.write_report(filename, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
+    def set_observability_status(self, current_phase, phase_status):
+        state_path = self.workspace_root / ".superlooper" / "state" / f"{self.task_id}.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["current_phase"] = current_phase
+        state["phase_status"] = phase_status
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        event_path = self.workspace_root / ".superlooper" / "events" / f"{self.task_id}.jsonl"
+        event_path.parent.mkdir(parents=True, exist_ok=True)
+        event_path.write_text(
+            json.dumps(
+                {
+                    "task_id": self.task_id,
+                    "current_phase": current_phase,
+                    "phase_status": phase_status,
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
     def write_valid_gate_reports(self):
         self.write_report(
             "code_review_report.md",
             "```yaml\n"
-            f"session_id: {self.session_id}\n"
+            f"task_id: {self.task_id}\n"
             "code_review_status: PASS\n"
             "blocker_count: 0\n"
             "blocking_major_count: 0\n"
             "reviewed_modules:\n"
             "- report_export\n"
-            f"report_path: .superlooper/reports/{self.session_id}/code_review_report.md\n"
+            f"report_path: .superlooper/reports/{self.task_id}/code_review_report.md\n"
             "```\n",
         )
-        self.write_json_report("merge_report.json", {"session_id": self.session_id, "status": "success"})
+        self.write_json_report("merge_report.json", {"task_id": self.task_id, "status": "success"})
         self.write_report(
             "test_report.md",
             "```yaml\n"
-            f"session_id: {self.session_id}\n"
+            f"task_id: {self.task_id}\n"
             "test_status: PASS\n"
-            f"tested_path: .superlooper/merged/{self.session_id}\n"
-            f"merge_report_path: .superlooper/reports/{self.session_id}/merge_report.json\n"
-            f"report_path: .superlooper/reports/{self.session_id}/test_report.md\n"
+            f"tested_path: .superlooper/merged/{self.task_id}\n"
+            f"merge_report_path: .superlooper/reports/{self.task_id}/merge_report.json\n"
+            f"report_path: .superlooper/reports/{self.task_id}/test_report.md\n"
             "```\n",
         )
-        self.write_json_report("apply_report.json", {"session_id": self.session_id, "status": "success"})
+        self.write_json_report("apply_report.json", {"task_id": self.task_id, "status": "success"})
 
     def test_update_session_writes_event_jsonl(self):
         self.create_session()
@@ -172,8 +200,8 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "update_session.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--current-phase",
             "design",
             "--phase-status",
@@ -189,12 +217,12 @@ class ObservabilityScriptsTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        event_path = self.workspace_root / ".superlooper" / "events" / f"{self.session_id}.jsonl"
+        event_path = self.workspace_root / ".superlooper" / "events" / f"{self.task_id}.jsonl"
         self.assertTrue(event_path.exists())
         lines = event_path.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(lines), 1)
         event = json.loads(lines[0])
-        self.assertEqual(event["session_id"], self.session_id)
+        self.assertEqual(event["task_id"], self.task_id)
         self.assertEqual(event["current_phase"], "design")
         self.assertEqual(event["phase_status"], "running")
         self.assertEqual(event["last_command"], "/spl:design observability_demo")
@@ -219,8 +247,8 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "update_session.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--current-phase",
             "design",
             "--phase-status",
@@ -238,7 +266,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        event_path = self.workspace_root / ".superlooper" / "events" / f"{self.session_id}.jsonl"
+        event_path = self.workspace_root / ".superlooper" / "events" / f"{self.task_id}.jsonl"
         line = event_path.read_text(encoding="utf-8").splitlines()[0]
         self.assertIn("[REDACTED]", line)
         for secret in [
@@ -254,7 +282,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
         ]:
             self.assertNotIn(secret, line)
 
-        state_path = self.workspace_root / ".superlooper" / "state" / f"{self.session_id}.json"
+        state_path = self.workspace_root / ".superlooper" / "state" / f"{self.task_id}.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["last_error"], last_error)
         self.assertEqual(state["next_actions"], [next_action])
@@ -265,8 +293,8 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "update_session.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--current-phase",
             "design",
             "--phase-status",
@@ -282,8 +310,8 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "validate_miao_contracts.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--scope",
             "observability",
         )
@@ -296,8 +324,8 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "update_session.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--current-phase",
             "design",
             "--phase-status",
@@ -308,7 +336,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "等待设计输出完成",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        state_path = self.workspace_root / ".superlooper" / "state" / f"{self.session_id}.json"
+        state_path = self.workspace_root / ".superlooper" / "state" / f"{self.task_id}.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["phase_status"] = "passed"
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -317,8 +345,8 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "validate_miao_contracts.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--scope",
             "observability",
         )
@@ -328,29 +356,14 @@ class ObservabilityScriptsTest(unittest.TestCase):
 
     def test_validate_observability_rejects_passed_state_without_apply_report(self):
         self.create_session()
-        result = self.run_script(
-            "update_session.py",
-            "--workspace-root",
-            str(self.workspace_root),
-            "--session-id",
-            self.session_id,
-            "--current-phase",
-            "report",
-            "--phase-status",
-            "passed",
-            "--last-command",
-            "/spl:run observability_demo",
-            "--next-action",
-            "查看最终报告",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.set_observability_status("report", "passed")
 
         result = self.run_script(
             "validate_miao_contracts.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--scope",
             "observability",
         )
@@ -360,32 +373,15 @@ class ObservabilityScriptsTest(unittest.TestCase):
 
     def test_validate_observability_rejects_passed_state_with_apply_conflict(self):
         self.create_session()
-        result = self.run_script(
-            "update_session.py",
-            "--workspace-root",
-            str(self.workspace_root),
-            "--session-id",
-            self.session_id,
-            "--current-phase",
-            "report",
-            "--phase-status",
-            "passed",
-            "--last-command",
-            "/spl:run observability_demo",
-            "--report",
-            ".superlooper/reports/observability_demo/apply_report.json",
-            "--next-action",
-            "查看最终报告",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.write_json_report("apply_conflict_report.json", {"session_id": self.session_id, "status": "blocked"})
+        self.set_observability_status("report", "passed")
+        self.write_json_report("apply_conflict_report.json", {"task_id": self.task_id, "status": "blocked"})
 
         result = self.run_script(
             "validate_miao_contracts.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--scope",
             "observability",
         )
@@ -395,7 +391,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
 
     def test_build_session_report_redacts_workspace_root(self):
         self.create_session()
-        state_path = self.workspace_root / ".superlooper" / "state" / f"{self.session_id}.json"
+        state_path = self.workspace_root / ".superlooper" / "state" / f"{self.task_id}.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["current_phase"] = "report"
         state["phase_status"] = "passed"
@@ -406,25 +402,27 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "build_session_report.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--redact-paths",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        report = (self.workspace_root / ".superlooper" / "reports" / self.session_id / "session_report.md").read_text(encoding="utf-8")
+        report = (self.workspace_root / ".superlooper" / "reports" / self.task_id / "session_report.md").read_text(encoding="utf-8")
         self.assertIn("- workspace_root: .", report)
         self.assertNotIn(str(self.workspace_root.resolve()), report)
 
     def test_merge_and_apply_redact_paths_remove_absolute_workspace_root(self):
         self.copy_fixture("happy-path")
         self.write_initialized_state("session_happy")
+        prd_path = self.workspace_root / ".superlooper" / "context" / "session_happy" / "prd.md"
+        prd_path.write_text("# PRD\n\nREQ-001\nAC-001\nDEC-001\nOPEN-001\n", encoding="utf-8")
 
         result = self.run_script(
             "generate_execution_manifest.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
+            "--task-id",
             "session_happy",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -433,7 +431,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "merge_artifacts.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
+            "--task-id",
             "session_happy",
             "--redact-paths",
         )
@@ -450,7 +448,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "generate_runtime_agents.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
+            "--task-id",
             "session_happy",
             "--agents-dir",
             "agents",
@@ -458,7 +456,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         (reports_dir / "code_review_report.md").write_text(
             "```yaml\n"
-            "session_id: session_happy\n"
+            "task_id: session_happy\n"
             "code_review_status: PASS\n"
             "blocker_count: 0\n"
             "blocking_major_count: 0\n"
@@ -469,14 +467,31 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "```\n",
             encoding="utf-8",
         )
+        test_evidence = {
+            "commands": [
+                {
+                    "command": "python -m unittest",
+                    "exit_code": 0,
+                    "result": "PASS",
+                    "key_output": "observability fixture passed",
+                }
+            ],
+            "requirement_coverage": [
+                {"id": item_id, "status": "PASS", "evidence": "validated by fixture"}
+                for item_id in ("REQ-001", "AC-001", "DEC-001", "OPEN-001")
+            ],
+        }
         (reports_dir / "test_report.md").write_text(
             "```yaml\n"
-            "session_id: session_happy\n"
+            "task_id: session_happy\n"
             "test_status: PASS\n"
             "tested_path: .superlooper/merged/session_happy/\n"
             "test_workspace_path: null\n"
             "merge_report_path: .superlooper/reports/session_happy/merge_report.json\n"
             "report_path: .superlooper/reports/session_happy/test_report.md\n"
+            "```\n"
+            "```json\n"
+            f"{json.dumps(test_evidence, ensure_ascii=False, indent=2)}\n"
             "```\n",
             encoding="utf-8",
         )
@@ -485,7 +500,7 @@ class ObservabilityScriptsTest(unittest.TestCase):
             "apply_to_workspace.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
+            "--task-id",
             "session_happy",
             "--redact-paths",
         )

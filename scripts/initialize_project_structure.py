@@ -4,7 +4,17 @@ import os
 import sys
 from pathlib import Path
 
-from create_session import load_state_from_path, resolve_workspace_root, state_file_path, validate_session_id, validate_session_state, write_state
+from create_session import (
+    SessionStateValidationError,
+    is_safe_relative_path,
+    load_state_from_path,
+    portable_path_parts,
+    resolve_explicit_task_id,
+    resolve_workspace_root,
+    state_file_path,
+    validate_session_state,
+    write_state,
+)
 
 
 PROJECT_VERSIONS = {
@@ -71,7 +81,8 @@ PROJECT_CLAUDE = """# Project CLAUDE.md
 def parse_args():
     parser = argparse.ArgumentParser(description="Initialize SUPERLOOPER target project structure.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     parser.add_argument("--project-category", required=True, choices=sorted(PROJECT_VERSIONS), help="初始化项目分类。")
     parser.add_argument("--project-version", required=True, help="初始化项目版本。")
     parser.add_argument("--project-root", required=True, help="workspace_root 内的项目根目录相对路径。")
@@ -79,13 +90,16 @@ def parse_args():
 
 
 def resolve_project_root(workspace_root, value):
-    raw = Path(value)
-    if raw.is_absolute() or raw.drive or ".." in raw.parts:
+    if value == ".":
+        return workspace_root
+    if not is_safe_relative_path(
+        value,
+        protected_roots=PROTECTED_ROOTS,
+    ):
         raise InitializationError("project_root 必须是 workspace_root 内的安全相对路径。")
-    parts = [part for part in raw.parts if part not in ("", ".")]
-    if parts and parts[0] in PROTECTED_ROOTS:
-        raise InitializationError("project_root 不能指向保护目录。")
-    project_root = (workspace_root / raw).resolve()
+    project_root = workspace_root.joinpath(
+        *portable_path_parts(value)
+    ).resolve()
     try:
         project_root.relative_to(workspace_root)
     except ValueError as exc:
@@ -131,8 +145,8 @@ def write_report(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def update_state(workspace_root, session_id, args, report_path):
-    path = state_file_path(workspace_root, session_id)
+def update_state(workspace_root, task_id, args, report_path):
+    path = state_file_path(workspace_root, task_id)
     state = load_state_from_path(path)
     state["current_phase"] = "initialization"
     state["phase_status"] = "passed"
@@ -140,19 +154,19 @@ def update_state(workspace_root, session_id, args, report_path):
     state["project_version"] = args.project_version
     state["project_root"] = args.project_root
     state["project_initialized"] = True
-    state["initialization_report"] = f".superlooper/reports/{session_id}/initialization_report.json"
+    state["initialization_report"] = f".superlooper/reports/{task_id}/initialization_report.json"
     state["next_actions"] = ["生成 module-split.json"]
     write_state(path, validate_session_state(state))
     return report_path
 
 
 def run(args):
-    session_id = validate_session_id(args.session_id)
+    task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
     workspace_root = resolve_workspace_root(args.workspace_root)
     validate_version(args.project_category, args.project_version)
     project_root = resolve_project_root(workspace_root, args.project_root)
     dirs, files = structure_for(args.project_category, args.project_version)
-    reports_dir = workspace_root / ".superlooper" / "reports" / session_id
+    reports_dir = workspace_root / ".superlooper" / "reports" / task_id
     conflicts = []
     for directory in dirs:
         ensure_dir(project_root / directory)
@@ -162,7 +176,7 @@ def run(args):
         write_report(
             reports_dir / "initialization_conflict_report.json",
             {
-                "session_id": session_id,
+                "task_id": task_id,
                 "status": "conflict",
                 "project_category": args.project_category,
                 "project_version": args.project_version,
@@ -176,7 +190,7 @@ def run(args):
     write_report(
         report_path,
         {
-            "session_id": session_id,
+            "task_id": task_id,
             "status": "success",
             "project_category": args.project_category,
             "project_version": args.project_version,
@@ -184,8 +198,8 @@ def run(args):
             "created_paths": created_paths,
         },
     )
-    update_state(workspace_root, session_id, args, report_path)
-    print(f".superlooper/reports/{session_id}/initialization_report.json")
+    update_state(workspace_root, task_id, args, report_path)
+    print(f".superlooper/reports/{task_id}/initialization_report.json")
     return 0
 
 
@@ -193,7 +207,7 @@ def main():
     args = parse_args()
     try:
         return run(args)
-    except InitializationError as exc:
+    except (InitializationError, SessionStateValidationError) as exc:
         print(f"初始化项目结构失败：{exc}", file=sys.stderr)
         return 1
 

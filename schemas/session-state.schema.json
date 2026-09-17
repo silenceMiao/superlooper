@@ -5,7 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "session_id",
+    "task_id",
+    "task_name",
     "workspace_root",
     "requirement_path",
     "current_phase",
@@ -38,6 +39,7 @@
     "change_request_count",
     "active_feedback_report",
     "change_impact_report",
+    "affected_modules",
     "invalidated_artifacts",
     "rollback_target_phase",
     "last_user_input_text",
@@ -45,7 +47,8 @@
     "pending_user_choice"
   ],
   "properties": {
-    "session_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+    "task_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+    "task_name": { "type": ["string", "null"], "minLength": 1, "maxLength": 120, "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]+$" },
     "workspace_root": { "type": "string", "minLength": 1 },
     "requirement_path": { "type": "string" },
     "current_phase": { "enum": ["init", "prd", "ui_design", "design", "initialization", "run", "requirement_alignment", "report"] },
@@ -128,6 +131,7 @@
     "change_request_count": { "type": "integer", "minimum": 0 },
     "active_feedback_report": { "type": ["string", "null"] },
     "change_impact_report": { "type": ["string", "null"] },
+    "affected_modules": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "invalidated_artifacts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "rollback_target_phase": { "type": ["string", "null"], "enum": ["prd", "ui_design", "design", "initialization", "run", "requirement_alignment", null] },
     "last_user_input_text": { "type": ["string", "null"] },

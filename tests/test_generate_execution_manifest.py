@@ -11,8 +11,8 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
         self.repo_root = Path(__file__).resolve().parents[1]
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace_root = Path(self.temp_dir.name)
-        self.session_id = "session_manifest"
-        self.manifests_dir = self.workspace_root / ".superlooper" / "manifests" / self.session_id
+        self.task_id = "session_manifest"
+        self.manifests_dir = self.workspace_root / ".superlooper" / "manifests" / self.task_id
         self.manifests_dir.mkdir(parents=True, exist_ok=True)
         self.module_split_path = self.manifests_dir / "module-split.json"
 
@@ -20,7 +20,7 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def write_ui_artifacts(self):
-        ui_dir = self.workspace_root / ".superlooper" / "context" / self.session_id / "ui"
+        ui_dir = self.workspace_root / ".superlooper" / "context" / self.task_id / "ui"
         ui_dir.mkdir(parents=True, exist_ok=True)
         (ui_dir / "ui-spec.md").write_text("# UI Spec\n", encoding="utf-8")
         (ui_dir / "page-map.md").write_text("# Page Map\n", encoding="utf-8")
@@ -29,7 +29,7 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
         (ui_dir / "preview.html").write_text("<!doctype html><html><body>demo</body></html>\n", encoding="utf-8")
 
     def write_design_artifacts(self):
-        design_dir = self.workspace_root / ".superlooper" / "context" / self.session_id / "design"
+        design_dir = self.workspace_root / ".superlooper" / "context" / self.task_id / "design"
         design_dir.mkdir(parents=True, exist_ok=True)
         (design_dir / "architecture.md").write_text("# Architecture\n", encoding="utf-8")
         (design_dir / "tech-stack.md").write_text("# Tech Stack\n", encoding="utf-8")
@@ -41,25 +41,27 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
         state_dir.mkdir(parents=True, exist_ok=True)
         report = initialization_report
         if project_initialized and report is None:
-            report = f".superlooper/reports/{self.session_id}/initialization_report.json"
+            report = f".superlooper/reports/{self.task_id}/initialization_report.json"
             report_path = self.workspace_root / report
             report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
-                json.dumps({"session_id": self.session_id, "status": "success"}, ensure_ascii=False, indent=2) + "\n",
+                json.dumps({"task_id": self.task_id, "status": "success"}, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
         self.write_ui_artifacts()
         self.write_design_artifacts()
-        (state_dir / f"{self.session_id}.json").write_text(
+        (state_dir / f"{self.task_id}.json").write_text(
             json.dumps(
                 {
-                    "session_id": self.session_id,
+                    "task_id": self.task_id,
+                    "task_name": None,
                     "workspace_root": str(self.workspace_root.resolve()),
                     "requirement_path": str((self.workspace_root / "requirements.md").resolve()),
                     "current_phase": current_phase,
                     "phase_status": phase_status,
                     "generated_files": [],
                     "reports": [],
+                    "script_events": [],
                     "last_command": "test",
                     "last_error": None,
                     "next_actions": [],
@@ -84,12 +86,13 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
                     "prd_revision": 0,
                     "ui_revision": 0,
                     "ui_status": ui_status,
-                    "ui_output_dir": f".superlooper/context/{self.session_id}/ui/",
+                    "ui_output_dir": f".superlooper/context/{self.task_id}/ui/",
                     "ui_artifacts_validated": ui_artifacts_validated,
                     "design_revision": 0,
                     "change_request_count": 0,
                     "active_feedback_report": None,
                     "change_impact_report": None,
+                    "affected_modules": [],
                     "invalidated_artifacts": [],
                     "rollback_target_phase": None,
                     "last_user_input_text": None,
@@ -111,8 +114,8 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
                 str(script_path),
                 "--workspace-root",
                 str(self.workspace_root),
-                "--session-id",
-                self.session_id,
+                "--task-id",
+                self.task_id,
             ],
             cwd=self.repo_root,
             text=True,
@@ -167,7 +170,8 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
         manifest_path = self.manifests_dir / "execution_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         node_map = {node["id"]: node for node in manifest["dag"]["nodes"]}
-        self.assertEqual(manifest["session_id"], self.session_id)
+        self.assertEqual(manifest["task_id"], self.task_id)
+        self.assertNotIn("session_id", manifest)
         self.assertEqual(manifest["granularity"], "module")
         self.assertIn("mod_report_export", node_map)
         self.assertIn("mod_audit_log", node_map)
@@ -178,12 +182,30 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
             "task_apply_to_workspace",
         ):
             self.assertIn(node_id, node_map)
+        self.assertEqual(
+            {
+                node_id: node_map[node_id]["agent"]
+                for node_id in (
+                    "task_code_review",
+                    "task_merge",
+                    "task_integration_test",
+                    "task_apply_to_workspace",
+                )
+            },
+            {
+                "task_code_review": "code-reviewer",
+                "task_merge": "system_merger",
+                "task_integration_test": "tester",
+                "task_apply_to_workspace": "workspace_applier",
+            },
+        )
 
         payload = node_map["mod_report_export"]["payload"]
-        self.assertEqual(payload["session_id"], self.session_id)
+        self.assertEqual(payload["task_id"], self.task_id)
+        self.assertNotIn("session_id", payload)
         self.assertEqual(payload["module_id"], "report_export")
-        self.assertEqual(payload["output_dir"], f".superlooper/outputs/{self.session_id}/report_export/")
-        self.assertEqual(payload["artifact_manifest_path"], f".superlooper/outputs/{self.session_id}/report_export/artifact_manifest.json")
+        self.assertEqual(payload["output_dir"], f".superlooper/outputs/{self.task_id}/report_export/")
+        self.assertEqual(payload["artifact_manifest_path"], f".superlooper/outputs/{self.task_id}/report_export/artifact_manifest.json")
         self.assertEqual(payload["requirement_refs"], ["REQ-001"])
         self.assertEqual(payload["acceptance_refs"], ["AC-001"])
         self.assertEqual(payload["ui_refs"], ["UI-PAGE-001"])
@@ -198,6 +220,59 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
         self.assertEqual(payload["test_focus"], ["导出成功路径"])
         self.assertEqual(payload["forbidden_inputs"], ["原始需求文档", "其他模块 payload", "其他模块输出目录"])
         self.assertEqual(payload["forbidden_outputs"], ["未包含在 target_files 中的文件", "目标项目根目录直接写入"])
+
+        self.assertEqual(
+            node_map["task_code_review"]["payload"],
+            {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "outputs_path": f".superlooper/outputs/{self.task_id}/",
+                "reports_path": f".superlooper/reports/{self.task_id}/",
+                "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+                "module_split_path": f".superlooper/manifests/{self.task_id}/module-split.json",
+            },
+        )
+        self.assertEqual(
+            node_map["task_merge"]["payload"],
+            {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "outputs_dir": ".superlooper/outputs",
+                "merged_dir": f".superlooper/merged/{self.task_id}",
+                "reports_dir": f".superlooper/reports/{self.task_id}",
+                "code_review_report_path": f".superlooper/reports/{self.task_id}/code_review_report.md",
+            },
+        )
+        self.assertEqual(
+            node_map["task_integration_test"]["payload"],
+            {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "merged_path": f".superlooper/merged/{self.task_id}/",
+                "reports_path": f".superlooper/reports/{self.task_id}/",
+                "prd_path": f".superlooper/context/{self.task_id}/prd.md",
+                "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+                "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "merge_report_path": f".superlooper/reports/{self.task_id}/merge_report.json",
+                "test_workspace_path": f".superlooper/test_workspace/{self.task_id}/",
+            },
+        )
+        apply_payload = node_map["task_apply_to_workspace"]["payload"]
+        self.assertEqual(
+            apply_payload,
+            {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "merged_dir": f".superlooper/merged/{self.task_id}",
+                "reports_dir": f".superlooper/reports/{self.task_id}",
+                "merge_report_path": f".superlooper/reports/{self.task_id}/merge_report.json",
+                "test_report_path": f".superlooper/reports/{self.task_id}/test_report.md",
+            },
+        )
+        self.assertNotIn("overwrite_existing", apply_payload)
+        self.assertNotIn("overwrite_files", apply_payload)
 
     def test_rejects_manifest_generation_before_ui_approval(self):
         self.write_module_split(
@@ -249,7 +324,7 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
             ]
         )
         self.write_state()
-        (self.workspace_root / ".superlooper" / "context" / self.session_id / "ui" / "preview.html").unlink()
+        (self.workspace_root / ".superlooper" / "context" / self.task_id / "ui" / "preview.html").unlink()
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("preview.html", result.stderr)
@@ -268,7 +343,7 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
             ]
         )
         self.write_state()
-        (self.workspace_root / ".superlooper" / "context" / self.session_id / "design" / "project-profile.md").unlink()
+        (self.workspace_root / ".superlooper" / "context" / self.task_id / "design" / "project-profile.md").unlink()
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("project-profile.md", result.stderr)
@@ -337,6 +412,63 @@ class GenerateExecutionManifestScriptTest(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("重复 target_files", result.stderr)
+
+    def test_generate_execution_manifest_rejects_windows_equivalent_target_files(self):
+        self.write_module_split(
+            [
+                {
+                    "id": "report_export",
+                    "name": "Report Export",
+                    "description": "实现导出控制器",
+                    "referenced_tables": [],
+                    "referenced_apis": [],
+                    "target_files": [
+                        "src/main/java/com/example/shared/SharedService.java"
+                    ],
+                },
+                {
+                    "id": "audit_log",
+                    "name": "Audit Log",
+                    "description": "实现审计日志服务",
+                    "referenced_tables": [],
+                    "referenced_apis": [],
+                    "target_files": [
+                        "SRC/main/java/com/example/shared/sharedservice.java."
+                    ],
+                },
+            ]
+        )
+        self.write_state()
+
+        result = self.run_script()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("重复 target_files", result.stderr)
+        self.assertIn("sharedservice.java.", result.stderr)
+
+    def test_generate_execution_manifest_rejects_windows_equivalent_targets_in_one_module(self):
+        self.write_module_split(
+            [
+                {
+                    "id": "report_export",
+                    "name": "Report Export",
+                    "description": "实现导出控制器",
+                    "referenced_tables": [],
+                    "referenced_apis": [],
+                    "target_files": [
+                        "src/main/java/com/example/Report.java",
+                        "SRC/main/java/com/example/report.java ",
+                    ],
+                }
+            ]
+        )
+        self.write_state()
+
+        result = self.run_script()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("target_files 存在重复路径", result.stderr)
+        self.assertIn("report.java ", result.stderr)
 
     def test_generate_execution_manifest_rejects_duplicate_module_ids(self):
         self.write_module_split(

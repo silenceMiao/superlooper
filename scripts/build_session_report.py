@@ -8,13 +8,17 @@ from pathlib import Path
 from create_session import (
     SessionStateValidationError,
     load_state_from_path,
+    normalize_legacy_identity,
+    resolve_explicit_task_id,
     resolve_workspace_root,
     state_file_path,
-    validate_session_id,
 )
+from snapshot_digest import compute_tree_digest
+from validate_miao_contracts import ContractValidator
 
 
-SESSION_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+SNAPSHOT_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 REPORT_FILES = {
     "code_review_report": "code_review_report.md",
     "merge_report": "merge_report.json",
@@ -38,29 +42,34 @@ class SessionReportError(Exception):
 
 
 class SessionReportBuilder:
-    def __init__(self, workspace_root, session_id, redact_paths=False):
+    def __init__(self, workspace_root, task_id, redact_paths=False):
         self.workspace_root = resolve_workspace_root(workspace_root)
-        self.session_id = self._validate_session_id(session_id)
+        self.task_id = self._validate_task_id(task_id)
         self.redact_paths = redact_paths
         self.runtime_root = self.workspace_root / ".superlooper"
-        self.state_path = state_file_path(self.workspace_root, self.session_id)
-        self.reports_dir = self.runtime_root / "reports" / self.session_id
+        self.state_path = state_file_path(self.workspace_root, self.task_id)
+        self.reports_dir = self.runtime_root / "reports" / self.task_id
         self.report_path = self.reports_dir / "session_report.md"
         self.state = self._load_state()
 
     def run(self):
         self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.report_path.unlink(missing_ok=True)
         report_files = self._collect_report_files()
         summary = self._build_summary(report_files)
+        if summary["result"] == RESULT_PASS:
+            summary["snapshot_digest"] = self._validate_snapshot_digest_chain(
+                report_files
+            )
         content = self._render_report(summary, report_files)
         self.report_path.write_text(content, encoding="utf-8")
         print(self.report_path)
         return 0
 
-    def _validate_session_id(self, session_id):
-        if not session_id or session_id in {".", ".."} or not SESSION_PATTERN.match(session_id):
-            raise SessionReportError("session_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
-        return session_id
+    def _validate_task_id(self, task_id):
+        if not task_id or task_id in {".", ".."} or not TASK_ID_PATTERN.match(task_id):
+            raise SessionReportError("task_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
+        return task_id
 
     def _load_state(self):
         try:
@@ -84,15 +93,16 @@ class SessionReportBuilder:
         phase_status = self.state["phase_status"]
         inputs = {
             "requirement_path": self._state_or_default("requirement_path", "unknown"),
-            "prd_path": self._state_or_default("prd_path", f".superlooper/context/{self.session_id}/prd.md"),
-            "design_docs_path": self._state_or_default("design_docs_path", f".superlooper/context/{self.session_id}/design/"),
-            "module_split_path": self._state_or_default("module_split_path", f".superlooper/manifests/{self.session_id}/module-split.json"),
-            "execution_manifest_path": self._state_or_default("execution_manifest_path", f".superlooper/manifests/{self.session_id}/execution_manifest.json"),
+            "prd_path": self._state_or_default("prd_path", f".superlooper/context/{self.task_id}/prd.md"),
+            "design_docs_path": self._state_or_default("design_docs_path", f".superlooper/context/{self.task_id}/design/"),
+            "module_split_path": self._state_or_default("module_split_path", f".superlooper/manifests/{self.task_id}/module-split.json"),
+            "execution_manifest_path": self._state_or_default("execution_manifest_path", f".superlooper/manifests/{self.task_id}/execution_manifest.json"),
         }
         result, reason = self._derive_result(report_files, current_phase, phase_status)
         apply_report = self._apply_report(report_files["apply_report"]["path"])
         return {
-            "session_id": self.session_id,
+            "task_id": self.task_id,
+            "task_name": self.state.get("task_name"),
             "workspace_root": self._display_path(self.state["workspace_root"]),
             "current_phase": current_phase,
             "phase_status": phase_status,
@@ -167,6 +177,8 @@ class SessionReportBuilder:
             return RESULT_FAIL, self._state_or_default("last_error", "state.phase_status=failed")
 
         if state_is_passed:
+            if self.state.get("requirement_alignment_passed") is not True:
+                return RESULT_FAIL, "state/report 不一致：requirement_alignment_passed 必须为 true"
             if alignment_report["state"] == REPORT_MISSING:
                 return RESULT_FAIL, "state/report 不一致：缺少 requirement_alignment_report.md"
             if alignment_report["state"] == REPORT_INVALID:
@@ -193,9 +205,9 @@ class SessionReportBuilder:
         status = data.get("code_review_status")
         if status not in ("PASS", "FAIL"):
             errors.append("code_review_report.code_review_status 必须为 PASS 或 FAIL")
-        if data.get("session_id") != self.session_id:
-            errors.append("code_review_report.session_id 与当前 session_id 不一致")
-        expected_path = f".superlooper/reports/{self.session_id}/code_review_report.md"
+        if data.get("task_id") != self.task_id:
+            errors.append("code_review_report.task_id 与当前 task_id 不一致")
+        expected_path = f".superlooper/reports/{self.task_id}/code_review_report.md"
         if self._normalized_yaml_value(data.get("report_path")) != expected_path:
             errors.append(f"code_review_report.report_path 必须为 {expected_path}")
         blocker_count = self._yaml_int(data.get("blocker_count"), "code_review_report.blocker_count", errors)
@@ -219,19 +231,23 @@ class SessionReportBuilder:
         status = data.get("test_status")
         if status not in ("PASS", "FAIL"):
             errors.append("test_report.test_status 必须为 PASS 或 FAIL")
-        if data.get("session_id") != self.session_id:
-            errors.append("test_report.session_id 与当前 session_id 不一致")
-        expected_tested_path = f".superlooper/merged/{self.session_id}"
+        if data.get("task_id") != self.task_id:
+            errors.append("test_report.task_id 与当前 task_id 不一致")
+        expected_tested_path = f".superlooper/merged/{self.task_id}"
         if self._normalized_yaml_value(data.get("tested_path")) != expected_tested_path:
             errors.append(f"test_report.tested_path 必须为 {expected_tested_path}")
-        expected_merge_report = f".superlooper/reports/{self.session_id}/merge_report.json"
+        expected_merge_report = f".superlooper/reports/{self.task_id}/merge_report.json"
         if self._normalized_yaml_value(data.get("merge_report_path")) != expected_merge_report:
             errors.append(f"test_report.merge_report_path 必须为 {expected_merge_report}")
-        expected_report_path = f".superlooper/reports/{self.session_id}/test_report.md"
+        expected_report_path = f".superlooper/reports/{self.task_id}/test_report.md"
         if self._normalized_yaml_value(data.get("report_path")) != expected_report_path:
             errors.append(f"test_report.report_path 必须为 {expected_report_path}")
         if status != "PASS":
             errors.append("test_report.test_status 必须为 PASS 才能进入 apply")
+        else:
+            validator = ContractValidator(self.workspace_root, self.task_id)
+            validator.validate_test_report(required=True)
+            errors.extend(validator.errors)
         if errors:
             return {"state": REPORT_INVALID, "status": None, "reason": "; ".join(errors)}
         return {"state": REPORT_OK, "status": status, "reason": None}
@@ -245,15 +261,27 @@ class SessionReportBuilder:
         status = data.get("requirement_alignment_status")
         if status not in ("PASS", "FAIL"):
             errors.append("requirement_alignment_report.requirement_alignment_status 必须为 PASS 或 FAIL")
+        if data.get("task_id") != self.task_id:
+            errors.append("requirement_alignment_report.task_id 与当前 task_id 不一致")
         unmet = self._yaml_int(data.get("unmet_requirement_count"), "requirement_alignment_report.unmet_requirement_count", errors)
         unchecked = self._yaml_int(data.get("unchecked_acceptance_count"), "requirement_alignment_report.unchecked_acceptance_count", errors)
         if status == "PASS" and unmet != 0:
             errors.append("requirement_alignment_report PASS 时 unmet_requirement_count 必须为 0")
         if status == "PASS" and unchecked != 0:
             errors.append("requirement_alignment_report PASS 时 unchecked_acceptance_count 必须为 0")
+        if status == "PASS":
+            validator = ContractValidator(self.workspace_root, self.task_id)
+            validator.validate_requirement_alignment_report(required=True)
+            errors.extend(validator.errors)
         if errors:
             return {"state": REPORT_INVALID, "status": None, "reason": "; ".join(errors)}
         return {"state": REPORT_OK, "status": status, "reason": None}
+
+    def _normalize_identity(self, data, label):
+        try:
+            return normalize_legacy_identity(data, label), None
+        except SessionStateValidationError as exc:
+            return None, str(exc)
 
     def _markdown_report(self, path):
         if not path.exists():
@@ -272,7 +300,10 @@ class SessionReportBuilder:
             if in_yaml and stripped == "```":
                 if not data:
                     return {"state": REPORT_INVALID, "status": None, "reason": f"{path.name} 第一个 YAML 状态块为空"}
-                return {"state": REPORT_OK, "status": None, "reason": None, "data": data}
+                normalized, error = self._normalize_identity(data, path.name)
+                if error:
+                    return {"state": REPORT_INVALID, "status": None, "reason": error}
+                return {"state": REPORT_OK, "status": None, "reason": None, "data": normalized}
             if in_yaml:
                 match = re.match(r"^([A-Za-z0-9_]+):\s*(.*)$", stripped)
                 if match:
@@ -307,6 +338,15 @@ class SessionReportBuilder:
             raise SessionReportError(f"读取 JSON 报告失败：{path}: {exc}") from exc
         if not isinstance(data, dict):
             raise SessionReportError(f"JSON 报告顶层必须是 object：{path}")
+        data, error = self._normalize_identity(data, path.name)
+        if error:
+            return {"state": REPORT_INVALID, "status": None, "reason": error}
+        if data.get("task_id") != self.task_id:
+            return {
+                "state": REPORT_INVALID,
+                "status": None,
+                "reason": f"{path.name} task_id 与当前 task_id 不一致",
+            }
         status = data.get("status")
         if isinstance(status, str) and status.strip():
             return {"state": REPORT_OK, "status": status.strip(), "reason": None}
@@ -321,15 +361,19 @@ class SessionReportBuilder:
             raise SessionReportError(f"读取 JSON 报告失败：{path}: {exc}") from exc
         if not isinstance(data, dict):
             raise SessionReportError(f"JSON 报告顶层必须是 object：{path}")
+        data, identity_error = self._normalize_identity(data, path.name)
         errors = []
+        if identity_error:
+            errors.append(identity_error)
+            data = {}
         status = data.get("status")
         if not isinstance(status, str) or not status.strip():
             errors.append(f"{path.name} 缺少 status")
             status = None
         else:
             status = status.strip()
-        if data.get("session_id") != self.session_id:
-            errors.append("apply_report.json session_id 与当前 session_id 不一致")
+        if data.get("task_id") != self.task_id:
+            errors.append("apply_report.json task_id 与当前 task_id 不一致")
         validation = data.get("workspace_validation")
         if not isinstance(validation, dict):
             errors.append("apply_report.workspace_validation 必须是 object")
@@ -348,13 +392,68 @@ class SessionReportBuilder:
             return {"state": REPORT_INVALID, "status": status, "reason": "; ".join(errors), "workspace_validation": validation}
         return {"state": REPORT_OK, "status": status, "reason": None, "workspace_validation": validation}
 
+    def _validate_snapshot_digest_chain(self, report_files):
+        merge_report = self._read_json_report(
+            report_files["merge_report"]["path"],
+            "merge_report.json",
+        )
+        apply_report = self._read_json_report(
+            report_files["apply_report"]["path"],
+            "apply_report.json",
+        )
+        merge_digest = merge_report.get("snapshot_digest")
+        if not isinstance(merge_digest, str) or not SNAPSHOT_DIGEST_PATTERN.fullmatch(merge_digest):
+            raise SessionReportError(
+                "merge_report.snapshot_digest 必须匹配 sha256:<64 lowercase hex>。"
+            )
+        apply_digest = apply_report.get("snapshot_digest")
+        if not isinstance(apply_digest, str) or not SNAPSHOT_DIGEST_PATTERN.fullmatch(apply_digest):
+            raise SessionReportError(
+                "apply_report.snapshot_digest 必须匹配 sha256:<64 lowercase hex>。"
+            )
+        merged_dir = self.runtime_root / "merged" / self.task_id
+        if not merged_dir.is_dir():
+            raise SessionReportError(f"merged tree 不存在：{merged_dir}")
+        try:
+            actual_digest = compute_tree_digest(merged_dir)
+        except OSError as exc:
+            raise SessionReportError(
+                f"merged tree snapshot_digest 计算失败：{exc}"
+            ) from exc
+        if merge_digest != actual_digest:
+            raise SessionReportError(
+                "merge_report.snapshot_digest 与 merged tree 不一致："
+                f"expected={merge_digest}, actual={actual_digest}"
+            )
+        if apply_digest != merge_digest:
+            raise SessionReportError(
+                "apply_report.snapshot_digest 与 merge_report.snapshot_digest 不一致。"
+            )
+        return merge_digest
+
+    def _read_json_report(self, path, label):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SessionReportError(f"读取 {label} 失败：{exc}") from exc
+        if not isinstance(data, dict):
+            raise SessionReportError(f"{label} 顶层必须是 object。")
+        normalized, error = self._normalize_identity(data, label)
+        if error:
+            raise SessionReportError(error)
+        if normalized.get("task_id") != self.task_id:
+            raise SessionReportError(f"{label} task_id 与当前 task_id 不一致。")
+        if normalized.get("status") != "success":
+            raise SessionReportError(f"{label} status 必须为 success。")
+        return normalized
+
     def _render_report(self, summary, report_files):
         lines = [
             "# Superlooper Session Report",
             "",
             "## Session",
             "",
-            f"- session_id: {summary['session_id']}",
+            f"- task_id: {summary['task_id']}",
             f"- workspace_root: {summary['workspace_root']}",
             f"- current_phase: {summary['current_phase']}",
             f"- phase_status: {summary['phase_status']}",
@@ -392,6 +491,19 @@ class SessionReportBuilder:
                 f"- checked_file_count: {validation.get('checked_file_count', 0)}",
                 f"- matched_file_count: {validation.get('matched_file_count', 0)}",
                 f"- failed_file_count: {validation.get('failed_file_count', 0)}",
+            ]
+        )
+        if summary.get("snapshot_digest"):
+            lines.extend(
+                [
+                    "",
+                    "## Snapshot",
+                    "",
+                    f"- snapshot_digest: {summary['snapshot_digest']}",
+                ]
+            )
+        lines.extend(
+            [
                 "",
                 "## Conclusion",
                 "",
@@ -429,7 +541,8 @@ class SessionReportBuilder:
 def parse_args():
     parser = argparse.ArgumentParser(description="Build SUPERLOOPER session_report.md from runtime state and report files.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     parser.add_argument("--redact-paths", action="store_true", help="将报告中的 workspace_root 与工作区内绝对路径脱敏为相对路径。")
     return parser.parse_args()
 
@@ -437,7 +550,8 @@ def parse_args():
 def main():
     args = parse_args()
     try:
-        builder = SessionReportBuilder(workspace_root=args.workspace_root, session_id=args.session_id, redact_paths=args.redact_paths)
+        task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
+        builder = SessionReportBuilder(workspace_root=args.workspace_root, task_id=task_id, redact_paths=args.redact_paths)
         return builder.run()
     except (SessionReportError, SessionStateValidationError) as exc:
         print(f"生成 session_report 失败：{exc}", file=sys.stderr)

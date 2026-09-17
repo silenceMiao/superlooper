@@ -2,12 +2,14 @@
 
 ## Scope
 
-This directory defines the Codex-native adapter that consumes the shared `.superlooper/manifests/<session_id>/execution_manifest.json`. The shared Manifest is the sole source for every node, dependency, and payload. This adapter does not define a separate session state, DAG, report format, quality gate, merge policy, test policy, or apply policy.
+This directory defines the Codex-native adapter that consumes the shared `.superlooper/manifests/<task_id>/execution_manifest.json`. The shared Manifest is the sole source for every node, dependency, and payload. This adapter does not define a separate session state, DAG, report format, quality gate, merge policy, test policy, or apply policy.
 
 ## Native dispatch rules
 
 - The parent Codex session uses the native `spawn_agent` tool for currently eligible `mod_*` nodes from the validated shared execution manifest.
-- Each child receives only its current node payload, its current module object, and explicitly listed design context. It must not receive the original requirement document, another module payload, or another module output directory.
+- For each eligible node, run `python "<plugin_root>/scripts/render_codex_spawn_prompt.py" --workspace-root . --task-id <task_id> --node-id <node_id>`. Stop immediately if rendering fails; do not reconstruct or supplement the child prompt manually.
+- Pass the renderer's 完整 stdout unchanged as `spawn_agent(..., fork_turns="none", message=<renderer stdout>)`. The renderer injects the current runtime Agent file verbatim, the current node payload, the current module object, allowed design paths, and the output contract.
+- Each child receives only its current runtime Agent, current node payload, current module object, and explicitly listed design context. It must not receive the original requirement document, another module payload, or another module output directory.
 - The parent session is non-ephemeral and can write required `.superlooper/` contract outputs. Only the shared `task_apply_to_workspace` gate may write target project files, after all preceding shared quality gates pass.
 - Each module writes its own output directory and `artifact_manifest.json`. The parent validates artifacts before handing control to the shared code-review gate.
 - Quality nodes run only when their dependencies reported by the Manifest and their shared reports have passed. The adapter delegates review, merge, test, apply, session report, and requirement-alignment gates to the core Superlooper protocol.

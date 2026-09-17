@@ -109,26 +109,33 @@ class CodexDocumentationTest(unittest.TestCase):
         self.assertIn("功能、流程、产物和质量门禁等价", content)
         self.assertIn("Python", content)
         self.assertIn("workspace-write", content)
-        self.assertNotIn("read-only", content)
+        self.assertIn("Doctor", content)
+        self.assertIn("status", content)
+        self.assertIn("read-only", content)
         self.assertIn("--platform codex", content)
 
     def test_user_guide_describes_codex_workspace_write_runtime_prerequisite(self):
         root = Path(__file__).resolve().parents[1]
         content = (root / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
 
-        self.assertIn("Python runtime", content)
+        self.assertIn("workflow runtime dependency", content)
         self.assertIn("workspace-write", content)
-        self.assertNotIn("read-only", content)
-        self.assertIn("运行 doctor 的 Codex parent session", content)
-        self.assertIn("不要通过扩大权限", content)
+        self.assertIn("$superlooper-status", content)
+        self.assertIn("$superlooper-doctor", content)
+        self.assertIn("read-only", content)
+        self.assertIn("当前实际 Agent 会话", content)
+        self.assertIn("不自动安装 Python", content)
+        self.assertIn("不修改 PATH、sandbox、权限或系统配置", content)
 
     def test_runtime_documentation_keeps_adapter_requirements_in_codex_document(self):
         root = Path(__file__).resolve().parents[1]
         content = (root / "docs" / "CODEX.md").read_text(encoding="utf-8")
 
-        self.assertIn("宿主 shell 能执行 Python 不足以证明", content)
-        self.assertIn("当前 Codex parent session", content)
-        self.assertIn("不要通过重启系统", content)
+        self.assertIn("workflow runtime dependency", content)
+        self.assertIn("当前实际 parent session", content)
+        self.assertIn("不自动安装 Python", content)
+        self.assertIn("不修改 PATH、sandbox、权限或系统配置", content)
+        self.assertIn("不得通过 `danger-full-access`", content)
         self.assertIn("--platform codex", content)
 
     def test_release_documentation_requires_workspace_write_codex_e2e(self):
@@ -139,15 +146,15 @@ class CodexDocumentationTest(unittest.TestCase):
         self.assertNotIn("只读 parent session", content)
         self.assertNotIn("read-only", content)
 
-    def test_manifests_and_changelog_use_version_1_1_1(self):
+    def test_manifests_and_changelog_use_version_1_2_0(self):
         root = Path(__file__).resolve().parents[1]
         claude_manifest = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
         codex_manifest = json.loads((root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual("1.1.1", claude_manifest["version"])
-        self.assertEqual("1.1.1", codex_manifest["version"])
-        self.assertIn("## 1.1.1", changelog)
+        self.assertEqual("1.2.0", claude_manifest["version"])
+        self.assertEqual("1.2.0", codex_manifest["version"])
+        self.assertIn("## 1.2.0", changelog)
 
 
 if __name__ == "__main__":

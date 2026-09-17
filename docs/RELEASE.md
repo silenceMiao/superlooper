@@ -19,11 +19,12 @@
 
 发布者在发布 install artifact 前必须确认 `docs/USER_GUIDE.md` 已进入 install closure，且源码 README 由该指南生成并覆盖以下用户路径：
 
-- Claude Code 安装后在目标项目根目录运行 `/superlooper:spl:doctor`，首次运行 `/superlooper:spl <requirement_path> [session_id]`，并通过 `/superlooper:spl:resume <session_id>` 恢复旧 session。
-- Codex 安装后在目标项目根目录运行 `$superlooper-doctor`，首次运行 `$superlooper <requirement_path> [session_id]`，并通过 `$superlooper-resume <session_id>` 恢复旧 session。
-- Claude Code 升级后先运行 `/superlooper:spl:doctor` 再恢复旧 session；Codex 升级后先运行 `$superlooper-doctor` 再恢复旧 session。
+- Claude Code 安装后在目标项目根目录运行 `/superlooper:spl:doctor`，首次运行 `/superlooper:spl <requirement_path> [--task-name "商城后台"]`，并通过 `/superlooper:spl:resume <task_id>` 恢复旧 task。
+- Codex 安装后在目标项目根目录运行 `$superlooper-doctor`，首次运行 `$superlooper <requirement_path> [--task-name "商城后台"]`，并通过 `$superlooper-resume <task_id>` 恢复旧 task。
+- 新任务的 `task_id` 由脚本生成 `master-framework-YYYYMMDDHHMMSS`；`task_name` 可选、可重复、允许 Unicode 和空格，只用于展示。多 active task 使用 task ID 消歧。
+- Claude Code 升级后先运行 `/superlooper:spl:doctor` 再恢复旧 task；Codex 升级后先运行 `$superlooper-doctor` 再恢复旧 task。
 - 卸载任一平台插件时不自动清理目标项目 `.superlooper/`；Claude Code 的 `.claude/agents/generated/superlooper/` 也保留供恢复、审计和交付追溯使用。
-- 常见失败处理覆盖 Claude Code `/superlooper:spl` 不可见、Codex `$superlooper` 不可见、两个平台的 doctor 失败、需求文件缺失、多 active session 和 apply 冲突重试。
+- 常见失败处理覆盖 Claude Code `/superlooper:spl` 不可见、Codex `$superlooper` 不可见、两个平台的 doctor 失败、需求文件缺失、多 active task 和 apply 冲突重试。
 
 ## Marketplace distribution
 
@@ -70,7 +71,7 @@ python scripts/package_marketplace.py --sync-target ../superAI-marketplace --ado
 /plugin install superlooper@superAI-marketplace
 ```
 
-安装后确认 `/superlooper:spl` 系列命令可见，在目标项目根目录先运行 `/superlooper:spl:doctor`，再运行 `/superlooper:spl requirements.md <session_id>` 并验收到达 PRD 审核握手。此步骤不能由 Python 文件复制测试或 `InstallArtifactSmokeTest` 替代。
+安装后确认 `/superlooper:spl` 系列命令可见，在目标项目根目录先运行 `/superlooper:spl:doctor`，再运行 `/superlooper:spl requirements.md [--task-name "验收任务"]` 并验收到达 PRD 审核握手。此步骤不能由 Python 文件复制测试或 `InstallArtifactSmokeTest` 替代。
 
 在另一个隔离临时目标项目执行真实 Codex Marketplace E2E 时，按以下顺序安装：
 
@@ -79,7 +80,35 @@ codex plugin marketplace add <owner>/superAI-marketplace --ref main
 codex plugin add superlooper@superAI-marketplace
 ```
 
-安装后确认八个 `$superlooper...` skill 可见，在目标项目根目录先运行 `$superlooper-doctor`，再运行 `$superlooper requirements.md <session_id>` 并验收到达同一 PRD 审核握手。Codex E2E 同样不能由 Python 文件复制测试、`InstallArtifactSmokeTest` 或 Claude Code E2E 替代。
+安装后确认八个 `$superlooper...` skill 可见，在目标项目根目录先运行 `$superlooper-doctor`，再运行 `$superlooper requirements.md [--task-name "验收任务"]` 并验收到达同一 PRD 审核握手。Codex E2E 同样不能由 Python 文件复制测试、`InstallArtifactSmokeTest` 或 Claude Code E2E 替代。
+
+## Runtime dependency 与验收分层
+
+Python 是 Superlooper workflow 的 `workflow runtime dependency`，不是 Claude Code 或 Codex 插件安装标准。插件安装成功不等于当前实际 Agent 会话能够运行 workflow。
+
+安装后先手动运行 Doctor。Claude `/superlooper:spl` 与 Codex `$superlooper` 总入口即使在用户跳过 Doctor 时，也会在任何 state 读取、目录创建、task 推进或 agent 调用前运行：
+
+```bash
+python --version
+```
+
+总入口 probe 失败时固定报告 `当前 Agent 会话无法执行 Python；Superlooper workflow 在该环境中不可用` 并无副作用停止。Doctor probe 失败时记录 `Doctor 未启动：runtime prerequisite unavailable`。插件不自动安装 Python，不修改 PATH、sandbox、权限或系统配置。
+
+发布证据必须按层记录：
+
+| 验收层 | 证明范围 | 不证明的内容 |
+| --- | --- | --- |
+| `strict` | Claude 插件 manifest 与静态结构合法 | Python workflow 可运行、未来用户环境可用 |
+| `package/compile/unit` | 受控开发或 CI 环境中的源码、脚本和 install closure | 任意开发宿主或未来用户 runtime |
+| `doctor` | 当前实际环境的显式只读诊断 | 其他机器或其他 Agent 会话 |
+| `artifact/Marketplace smoke` | 当前测试解释器 `sys.executable` 下的安装闭包和最小运行能力 | 真实 Claude/Codex 安装器 E2E、未来用户 PATH/sandbox |
+| `release consistency` | 源码、install closure、Marketplace、双 registry、v2 ledger 与 Git 一致性 | 平台运行时可用性 |
+| `platform E2E` | 已满足声明依赖的真实 Claude Code 或 Codex 环境中的安装、发现、Doctor 和首次任务 | 另一平台或缺少依赖的环境 |
+| `runtime preflight` | 未来用户当前实际 Agent 会话能否执行 Python | 源码或发布物质量 |
+
+支持环境中插件功能失败才记录为 `FAIL`。缺 Python、Claude Code 或 Codex导致测试未执行时记录 `NOT_RUN_ENVIRONMENT_PREREQUISITE`；该状态不能判定源码或发布物失败，也不能冒充 E2E PASS。
+
+双平台兼容声明要求 Claude Code 与 Codex 各自在满足声明依赖的受控环境存在 PASS 证据。一个不满足前提的开发宿主不能取消另一受控环境中的有效 PASS 证据。
 
 ## Release checks
 
@@ -102,7 +131,7 @@ claude plugin validate . --strict
 
 `python -m unittest tests.test_package_plugin.InstallArtifactSmokeTest` 会生成 install zip、解压到临时目录，并在解压后的 install artifact 根目录运行 `python bin/spl doctor`。该 smoke test 只验证安装产物完整性和最小自检能力，不代表真实 Claude Code 插件安装器 E2E。
 
-发布前人工 E2E 必须分别在两个隔离临时目标项目中完成：Claude Code 安装 `superlooper-<version>-install.zip` 后确认 `/superlooper:spl` 系列命令可见，运行 `/superlooper:spl:doctor`，再用已存在的 `requirements.md` 运行 `/superlooper:spl requirements.md <session_id>` 到 PRD 审核握手点；Codex 从同一 Marketplace 安装后确认八个 `$superlooper...` skill 可见，运行 `$superlooper-doctor`，再运行 `$superlooper requirements.md <session_id>` 到同一握手点。任一平台的 E2E 失败时，阻断该版本的双平台发布。
+发布前人工 E2E 必须分别在两个隔离临时目标项目中完成：Claude Code 安装 `superlooper-<version>-install.zip` 后确认 `/superlooper:spl` 系列命令可见，运行 `/superlooper:spl:doctor`，再用已存在的 `requirements.md` 运行 `/superlooper:spl requirements.md [--task-name "验收任务"]` 到 PRD 审核握手点；Codex 从同一 Marketplace 安装后确认八个 `$superlooper...` skill 可见，运行 `$superlooper-doctor`，再运行 `$superlooper requirements.md [--task-name "验收任务"]` 到同一握手点。满足环境前提后任一平台出现插件功能失败时，阻断对应兼容结论；环境前提不足时记录 `NOT_RUN_ENVIRONMENT_PREREQUISITE`，不得写为 FAIL 或 PASS。
 
 ## Real Claude Code install E2E acceptance
 
@@ -114,9 +143,10 @@ claude plugin validate . --strict
 2. 准备已存在的 `requirements.md`。
 3. 通过真实 Claude Code 插件安装机制安装 `superlooper-<version>-install.zip`。
 4. 启动 Claude Code，确认 `/superlooper:spl`、`/superlooper:spl:doctor`、`/superlooper:spl:resume`、`/superlooper:spl:run` 系列命令可见。
-5. 在临时目标项目根目录运行 `/superlooper:spl:doctor`。
-6. 运行 `/superlooper:spl requirements.md <session_id>`。
-7. 验收到达 PRD 审核握手点：输出 `.superlooper/context/<session_id>/prd.md`，并提示用户审核 PRD 后回复 `通过，进入 UI 设计`。
+5. 在同一 Claude Code Agent 会话运行 `python --version`；失败时将本次 E2E 记录为 `NOT_RUN_ENVIRONMENT_PREREQUISITE` 并停止。
+6. 在临时目标项目根目录运行 `/superlooper:spl:doctor`。
+7. 运行 `/superlooper:spl requirements.md [--task-name "验收任务"]`。
+8. 验收到达 PRD 审核握手点：记录系统生成的 `task_id`，确认输出 `.superlooper/context/<task_id>/prd.md`，并提示用户审核 PRD 后回复 `通过，进入 UI 设计`。
 
 ### Acceptance record template
 
@@ -129,17 +159,20 @@ claude plugin validate . --strict
 | Artifact checksum |  |
 | Temporary target project |  |
 | Install method |  |
-| `/superlooper:spl` commands visible | PASS/FAIL |
-| `/superlooper:spl:doctor` | PASS/FAIL |
-| `/superlooper:spl requirements.md <session_id>` reached PRD review handshake | PASS/FAIL |
+| Runtime prerequisite (`python --version`) | PASS/NOT_RUN_ENVIRONMENT_PREREQUISITE |
+| Overall E2E status | PASS/FAIL/NOT_RUN_ENVIRONMENT_PREREQUISITE |
+| `/superlooper:spl` commands visible | PASS/FAIL/NOT_RUN |
+| `/superlooper:spl:doctor` | PASS/FAIL/NOT_RUN |
+| `/superlooper:spl requirements.md [--task-name "验收任务"]` reached PRD review handshake | PASS/FAIL/NOT_RUN |
+| Generated task ID |  |
 | Evidence |  |
 | Deviations / failures |  |
 
-Boundary: this E2E stops at the PRD review handshake. It proves real Claude Code plugin installation, command discovery, doctor startup and first session entry. It does not prove full module implementation, merge, test, apply or final requirement alignment.
+Boundary: this E2E stops at the PRD review handshake. It proves real Claude Code plugin installation, command discovery, doctor startup and first task entry. It does not prove full module implementation, merge, test, apply or final requirement alignment.
 
 ## Real Codex install E2E acceptance
 
-Codex E2E 使用与 Claude Code E2E 不同的临时目标项目和 non-ephemeral、`workspace-write` parent session。它验证真实 Codex Marketplace 安装、skill discovery、doctor 与首次 session 入口，不以 Claude Code 安装结果推断兼容性。
+Codex E2E 使用与 Claude Code E2E 不同的临时目标项目和 non-ephemeral、`workspace-write` parent session。它验证真实 Codex Marketplace 安装、skill discovery、doctor 与首次 task 入口，不以 Claude Code 安装结果推断兼容性。
 
 ### Required manual steps
 
@@ -148,9 +181,10 @@ Codex E2E 使用与 Claude Code E2E 不同的临时目标项目和 non-ephemeral
 3. 添加已发布的 Marketplace：`codex plugin marketplace add <owner>/superAI-marketplace --ref main`。
 4. 安装插件：`codex plugin add superlooper@superAI-marketplace`。
 5. 启动 Codex，确认 `$superlooper`、`$superlooper-doctor`、`$superlooper-resume`、`$superlooper-run` 等八个 skill 可见。
-6. 在临时目标项目根目录运行 `$superlooper-doctor`。
-7. 运行 `$superlooper requirements.md <session_id>`。
-8. 验收到达 PRD 审核握手点：输出 `.superlooper/context/<session_id>/prd.md`，并提示用户审核 PRD 后回复 `通过，进入 UI 设计`。
+6. 在同一 non-ephemeral、`workspace-write` Codex parent session 运行 `python --version`；失败时将本次 E2E 记录为 `NOT_RUN_ENVIRONMENT_PREREQUISITE` 并停止。
+7. 在临时目标项目根目录运行 `$superlooper-doctor`。
+8. 运行 `$superlooper requirements.md [--task-name "验收任务"]`。
+9. 验收到达 PRD 审核握手点：记录系统生成的 `task_id`，确认输出 `.superlooper/context/<task_id>/prd.md`，并提示用户审核 PRD 后回复 `通过，进入 UI 设计`。
 
 ### Acceptance record template
 
@@ -163,9 +197,12 @@ Codex E2E 使用与 Claude Code E2E 不同的临时目标项目和 non-ephemeral
 | Plugin version |  |
 | Temporary target project |  |
 | Install method | `codex plugin marketplace add` + `codex plugin add` |
-| Eight `$superlooper...` skills visible | PASS/FAIL |
-| `$superlooper-doctor` | PASS/FAIL |
-| `$superlooper requirements.md <session_id>` reached PRD review handshake | PASS/FAIL |
+| Runtime prerequisite (`python --version`) | PASS/NOT_RUN_ENVIRONMENT_PREREQUISITE |
+| Overall E2E status | PASS/FAIL/NOT_RUN_ENVIRONMENT_PREREQUISITE |
+| Eight `$superlooper...` skills visible | PASS/FAIL/NOT_RUN |
+| `$superlooper-doctor` | PASS/FAIL/NOT_RUN |
+| `$superlooper requirements.md [--task-name "验收任务"]` reached PRD review handshake | PASS/FAIL/NOT_RUN |
+| Generated task ID |  |
 | Evidence |  |
 | Deviations / failures |  |
 
@@ -244,7 +281,7 @@ Claude Code 公开命令前缀是 `/superlooper:spl`；Codex 公开 skill 前缀
 5. 在项目根目录运行 release checks，并审阅生成的 Marketplace tree 同时包含两份 metadata 与两份 plugin manifest。
 6. 打开 release manifest JSON，确认本文件中的 manifest contract，尤其是 install closure、MIT license 与 release filter。
 7. 只发布 release manifest JSON 或对应归档列出的文件；不得带入 `.superlooper/`、`.claude/`、`.learnings/`、缓存、测试、私有配置或密钥。
-8. 在两个独立临时项目完成 Claude Code 与 Codex E2E；任一平台失败时停止双平台发布。
+8. 在两个独立临时项目执行 Claude Code 与 Codex E2E；满足环境前提后的功能失败阻断对应兼容结论，环境前提不足记录 `NOT_RUN_ENVIRONMENT_PREREQUISITE`，不得冒充 PASS。
 9. 打包后 spot check 最终 artifact 与 Marketplace tree，确认 Claude command 文件仍位于 `commands/spl.md` 和 `commands/spl/*.md`，Codex skill 仍位于 `codex/skills/`。
 
 ## 发布一致性检查

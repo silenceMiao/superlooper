@@ -43,9 +43,9 @@ activation: explicit_only
 
 | 字段                 | 说明                                                     |
 | ------------------ | ------------------------------------------------------ |
-| `session_id`       | 当前编排会话 ID                                              |
+| `task_id`       | 当前任务唯一 ID                                              |
 | `requirement_path` | 原始需求文档路径                                               |
-| `output_prd_path`  | PRD 输出路径，默认 `.superlooper/context/<session_id>/prd.md` |
+| `output_prd_path`  | PRD 输出路径，默认 `.superlooper/context/<task_id>/prd.md` |
 | `reports_path`     | 可选，需求阶段报告输出目录                                          |
 | `feedback_report`  | 可选，PRD 审核未通过或需求变更反馈记录路径                                 |
 | `prd_revision`     | 可选，PRD 重分析轮次                                                   |
@@ -291,16 +291,16 @@ OBJ-* -> PROB-* -> REQ-* -> AC-* -> SUCCESS-*
 
 # 上游自校对输出
 
-`analyst` 必须把结构化 PRD 与原始需求文档做自校对，并输出 `.superlooper/reports/<session_id>/upstream_alignment.md`。第一个代码块必须为 YAML 状态块：
+`analyst` 必须把结构化 PRD 与原始需求文档做自校对，并输出 `.superlooper/reports/<task_id>/upstream_alignment.md`。第一个代码块必须为 YAML 状态块：
 
 ```yaml
-session_id: <session_id>
+task_id: <task_id>
 upstream_alignment_status: PASS | FAIL | BLOCKED
 mismatch_count: <number>
 loop_required: true | false
 loop_target_phase: prd
 blocking_decisions: []
-report_path: .superlooper/reports/<session_id>/upstream_alignment.md
+report_path: .superlooper/reports/<task_id>/upstream_alignment.md
 ```
 
 `PASS` 表示 PRD 保留了原始需求事实、约束、边界和验收表达；`FAIL` 表示可通过重分析修复；`BLOCKED` 表示必须由用户确认关键需求决策。
@@ -417,7 +417,7 @@ next_action: REVIEW_PRD_THEN_ENTER_DESIGN
 | 字段 | 填写规则 |
 | --- | --- |
 | PRD 标题 | 使用真实需求主题生成 |
-| session_id | 使用 `payload.session_id` |
+| task_id | 使用 `payload.task_id` |
 | 原始需求文档 | 使用 `payload.requirement_path` |
 | PRD 输出路径 | 使用 `payload.output_prd_path` |
 | 需求状态 | 固定为 `READY_FOR_DESIGN` |
@@ -738,6 +738,6 @@ Then [期望结果]
 - 不做技术选型决策。
 - 不生成 `module-split.json`。
 - 不提供架构设计、接口设计、数据库设计或模块拆分。
-- 输出路径必须使用 payload 中的 `output_prd_path`，缺省时使用 `.superlooper/context/<session_id>/prd.md`。
+- 输出路径必须使用 payload 中的 `output_prd_path`，缺省时使用 `.superlooper/context/<task_id>/prd.md`。
 - 正式 PRD 中禁止残留占位符、空泛待办或未归类的不确定内容；无法确定的内容必须进入 `ASM-*`、`OPEN-*` 或 `DEC-*`。
 - 存在阻塞 PRD 正确性的 `DEC-*` 时禁止写入 `output_prd_path`，避免后续阶段误把未决需求当作可审核 PRD。

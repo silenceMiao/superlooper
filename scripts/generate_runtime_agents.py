@@ -1,20 +1,22 @@
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 from pathlib import Path
 
+from create_session import SessionStateValidationError, resolve_explicit_task_id
 from generate_execution_manifest import FORBIDDEN_INPUTS, FORBIDDEN_OUTPUTS
 
 
-SESSION_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 MODULE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
-DESCRIPTION_PREFIX = "description: 动态模块编码子代理，负责 "
+DESCRIPTION_PREFIX = "动态模块编码子代理，负责 "
 DESCRIPTION_ENDING_PUNCTUATION = ("。", ".", "！", "!", "？", "?")
 CONSTRAINT_SECTION_TITLE = "## Runtime Module Constraints"
 MODULE_CONSTRAINT_FIELDS = [
-    "session_id",
+    "task_id",
     "module_id",
     "target_files",
     "file_roles",
@@ -42,16 +44,16 @@ class RuntimeAgentGenerationError(Exception):
 
 
 class RuntimeAgentGenerator:
-    def __init__(self, workspace_root, session_id, agents_dir, plugin_root=None, platform="claude"):
+    def __init__(self, workspace_root, task_id, agents_dir, plugin_root=None, platform="claude"):
         self.root = Path(workspace_root).resolve()
         self.plugin_root = Path(plugin_root).resolve() if plugin_root else Path(__file__).resolve().parents[1]
-        self.session_id = self._validate_session_id(session_id)
+        self.task_id = self._validate_task_id(task_id)
         self.platform = platform
         self.agents_dir = self._resolve_plugin_path(agents_dir, self.plugin_root / "agents")
         self.template_path = self.agents_dir / "developer.md"
-        self.module_split_path = self.root / ".superlooper" / "manifests" / self.session_id / "module-split.json"
-        self.runtime_agents_dir = self.root / ".superlooper" / "agents" / self.session_id
-        self.registered_agents_dir = self.root / ".claude" / "agents" / "generated" / "superlooper" / self.session_id
+        self.module_split_path = self.root / ".superlooper" / "manifests" / self.task_id / "module-split.json"
+        self.runtime_agents_dir = self.root / ".superlooper" / "agents" / self.task_id
+        self.registered_agents_dir = self.root / ".claude" / "agents" / "generated" / "superlooper" / self.task_id
 
     def run(self):
         template = self._read_template()
@@ -68,7 +70,11 @@ class RuntimeAgentGenerator:
             if self.platform == "claude":
                 registered_path = self.registered_agents_dir / filename
                 registered_path.parent.mkdir(parents=True, exist_ok=True)
-                registered_path.write_text(content, encoding="utf-8")
+                registered_content = self._replace_frontmatter_name(
+                    content,
+                    self._registered_agent_name(module_id),
+                )
+                registered_path.write_text(registered_content, encoding="utf-8")
                 generated_paths.append(self._contract_path(registered_path))
         for path in generated_paths:
             print(path)
@@ -82,10 +88,10 @@ class RuntimeAgentGenerator:
             path = self.plugin_root / path
         return path.resolve()
 
-    def _validate_session_id(self, session_id):
-        if not session_id or session_id in {".", ".."} or not SESSION_PATTERN.match(session_id):
-            raise RuntimeAgentGenerationError("session_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
-        return session_id
+    def _validate_task_id(self, task_id):
+        if not task_id or task_id in {".", ".."} or not TASK_ID_PATTERN.match(task_id):
+            raise RuntimeAgentGenerationError("task_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
+        return task_id
 
     def _read_template(self):
         if not self.template_path.exists():
@@ -149,7 +155,9 @@ class RuntimeAgentGenerator:
                 continue
             if in_frontmatter and line.strip() == "---":
                 if not description_replaced:
-                    rendered.append(f"{DESCRIPTION_PREFIX}{module_description}\n")
+                    rendered.append(
+                        f"description: {self._format_yaml_scalar(DESCRIPTION_PREFIX + module_description)}\n"
+                    )
                     description_replaced = True
                 rendered.append(line)
                 in_frontmatter = False
@@ -159,7 +167,9 @@ class RuntimeAgentGenerator:
                 rendered.append(f"name: module_{module_id}\n")
                 continue
             if in_frontmatter and line.startswith("description:"):
-                rendered.append(f"{DESCRIPTION_PREFIX}{module_description}\n")
+                rendered.append(
+                    f"description: {self._format_yaml_scalar(DESCRIPTION_PREFIX + module_description)}\n"
+                )
                 description_replaced = True
                 continue
             rendered.append(line)
@@ -168,13 +178,16 @@ class RuntimeAgentGenerator:
         content = "".join(rendered).rstrip() + "\n\n" + self._render_module_constraints(module)
         if f"name: module_{module_id}" not in content:
             raise RuntimeAgentGenerationError(f"模块 agent name 替换失败：{module_id}")
-        if f"{DESCRIPTION_PREFIX}{module_description}" not in content:
+        expected_description = self._format_yaml_scalar(
+            DESCRIPTION_PREFIX + module_description
+        )
+        if f"description: {expected_description}" not in content:
             raise RuntimeAgentGenerationError(f"模块 agent description 替换失败：{module_id}")
         return content
 
     def _render_module_constraints(self, module):
         constraints = {
-            "session_id": self.session_id,
+            "task_id": self.task_id,
             "module_id": module["id"],
             "target_files": self._module_list(module, "target_files"),
             "file_roles": self._module_list(module, "file_roles"),
@@ -209,33 +222,29 @@ class RuntimeAgentGenerator:
 
     def _append_yaml_value(self, lines, key, value, indent):
         prefix = " " * indent
-        if isinstance(value, list):
-            lines.append(f"{prefix}{key}:\n")
-            for item in value:
-                if isinstance(item, dict):
-                    if not item:
-                        lines.append(f"{prefix}  - {{}}\n")
-                        continue
-                    lines.append(f"{prefix}  -\n")
-                    for child_key, child_value in item.items():
-                        self._append_yaml_value(lines, child_key, child_value, indent + 4)
-                else:
-                    lines.append(f"{prefix}  - {self._format_yaml_scalar(item)}\n")
-            return
-        if isinstance(value, dict):
-            lines.append(f"{prefix}{key}:\n")
-            for child_key, child_value in value.items():
-                self._append_yaml_value(lines, child_key, child_value, indent + 2)
-            return
         lines.append(f"{prefix}{key}: {self._format_yaml_scalar(value)}\n")
 
     def _format_yaml_scalar(self, value):
-        if value is None:
-            return "null"
-        text = str(value).replace("\n", "\\n")
-        if not text:
-            return '""'
-        return text
+        return json.dumps(value, ensure_ascii=False)
+
+    def _registered_agent_name(self, module_id):
+        task_hash = hashlib.sha256(self.task_id.encode("utf-8")).hexdigest()[:16]
+        return f"module_{module_id}__task_{task_hash}"
+
+    def _replace_frontmatter_name(self, content, name):
+        lines = content.splitlines(keepends=True)
+        in_frontmatter = False
+        for index, line in enumerate(lines):
+            if line.strip() == "---":
+                if not in_frontmatter:
+                    in_frontmatter = True
+                    continue
+                break
+            if in_frontmatter and line.startswith("name:"):
+                newline = "\n" if line.endswith("\n") else ""
+                lines[index] = f"name: {name}{newline}"
+                return "".join(lines)
+        raise RuntimeAgentGenerationError("动态 agent frontmatter 缺少 name。")
 
     def _format_module_description(self, module_description):
         if module_description.endswith(DESCRIPTION_ENDING_PUNCTUATION):
@@ -253,7 +262,8 @@ def parse_args():
         default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()),
         help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。",
     )
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     parser.add_argument("--agents-dir", required=True, help="插件静态 agent 目录，例如 agents。相对路径按插件根目录解析。")
     parser.add_argument("--plugin-root", default=os.getenv("SUPERLOOPER_PLUGIN_ROOT"), help="插件源码或安装根目录，默认使用当前脚本所在插件根。")
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude", help="平台注册目标，默认 claude。")
@@ -263,15 +273,16 @@ def parse_args():
 def main():
     args = parse_args()
     try:
+        task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
         generator = RuntimeAgentGenerator(
             workspace_root=args.workspace_root,
-            session_id=args.session_id,
+            task_id=task_id,
             agents_dir=args.agents_dir,
             plugin_root=args.plugin_root,
             platform=args.platform,
         )
         return generator.run()
-    except RuntimeAgentGenerationError as exc:
+    except (RuntimeAgentGenerationError, SessionStateValidationError) as exc:
         print(f"生成 runtime agents 失败：{exc}", file=sys.stderr)
         return 1
 

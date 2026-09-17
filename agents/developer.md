@@ -17,15 +17,15 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 
 | 字段 | 说明 |
 | --- | --- |
-| `session_id` | 当前编排会话 ID |
+| `task_id` | 当前任务唯一 ID |
 | `module_id` | 当前模块 ID |
 | `module_payload` | 当前模块任务描述，来自 `module-split.json` 的当前模块对象和 Manifest 当前节点 payload |
-| `design_docs_path` | 设计文档目录，默认 `.superlooper/context/<session_id>/design/` |
-| `project_profile_path` | 后端项目画像路径，默认 `.superlooper/context/<session_id>/design/project-profile.md` |
-| `module_split_path` | 模块拆分清单路径，默认 `.superlooper/manifests/<session_id>/module-split.json` |
-| `execution_manifest_path` | 执行清单路径，默认 `.superlooper/manifests/<session_id>/execution_manifest.json` |
-| `output_dir` | 模块产物目录，默认 `.superlooper/outputs/<session_id>/<module_id>/` |
-| `artifact_manifest_path` | 产物清单路径，默认 `.superlooper/outputs/<session_id>/<module_id>/artifact_manifest.json` |
+| `design_docs_path` | 设计文档目录，默认 `.superlooper/context/<task_id>/design/` |
+| `project_profile_path` | 后端项目画像路径，默认 `.superlooper/context/<task_id>/design/project-profile.md` |
+| `module_split_path` | 模块拆分清单路径，默认 `.superlooper/manifests/<task_id>/module-split.json` |
+| `execution_manifest_path` | 执行清单路径，默认 `.superlooper/manifests/<task_id>/execution_manifest.json` |
+| `output_dir` | 模块产物目录，默认 `.superlooper/outputs/<task_id>/<module_id>/` |
+| `artifact_manifest_path` | 产物清单路径，默认 `.superlooper/outputs/<task_id>/<module_id>/artifact_manifest.json` |
 | `target_files` | 当前模块允许产出的目标项目根目录相对路径列表 |
 | `file_roles` | 当前模块目标文件角色映射，来自 `module-split.json` |
 | `requirement_refs` | 当前模块对应的 `REQ-*` 需求追溯编号 |
@@ -122,7 +122,7 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 
 ```json
 {
-  "session_id": "master-framework-20260714",
+  "task_id": "master-framework-20260714143522",
   "module_id": "report_export",
   "agent": "module_report_export",
   "status": "success",
@@ -150,12 +150,13 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 
 # 约束
 
-- `produced_files[].path` 必须是目标后端项目根目录相对路径，不是 `.superlooper` 内部路径。
+- `produced_files[].path` 必须是目标后端项目根目录相对路径，不是 `.superlooper` 内部路径；`.superlooper`、`.git`、`.svn`、`.hg` 按 Windows 大小写不敏感、每段尾点/尾空格和 `/`、`\\` 分隔符等价规则识别为保护根，任何等价变体均不得声明或写入。
 - 若模块 payload 或 `module-split.json` 已提供 `target_files`，则 `produced_files[].path` 必须来自该模块 `target_files`，不得临时扩散到未声明路径。
+- `produced_files[].path` 声明和 `output_dir` 中实际产物文件都必须按 Windows 等价路径保持唯一；统一分隔符、忽略大小写并移除每个路径段末尾的点和空格后，不得有两个路径指向同一物理文件。
 - `allowed_existing_files` 只声明当前模块允许修改的既有文件，它必须是 `target_files` 子集，不扩大模块产出范围，不代表允许覆盖目标工作区已有不同内容文件。
 - `forbidden_files` 中的路径不得出现在 `produced_files[].path`，不得写入 `output_dir` 下的对应镜像路径。
 - `overwrite_policy` 固定为 `block_by_default`；遇到需要覆盖既有不同内容文件时，输出 `status: "blocked"`，不得自行使用覆盖参数。
-- 模块文件必须实际写入 `output_dir/<produced_files[].path>`，用于后续合并和应用到项目根目录。
+- 模块文件必须实际写入 `output_dir/<produced_files[].path>`，用于后续合并和应用到项目根目录；模块目录、`artifact_manifest.json` 和产物文件不得通过 symlink、junction 或其他重解析路径指向当前 `output_dir` 外部。
 - Java 后端项目必须使用以下目录：控制层 `controller`，服务接口 `service`，服务实现 `service/impl`，数据库映射接口 `dao`，模块层 `module/{beans,common,aop,core,vo,security,log}`，工具层 `utils/{inner,outer}`，Mapper XML `src/main/resources/mapper/***-mapper.xml`。
 - 未写入 `artifact_manifest.json` 的文件不得合并。
 - 遇到设计文档未覆盖、payload 与设计冲突、`target_files` 缺失、需要修改未声明路径或需要跨模块协作但 Manifest 未表达时，输出 `status: "blocked"` 的 `artifact_manifest.json`，并在 `verification.summary` 或 `notes` 说明阻塞原因后向主会话报告，不擅自决策。
@@ -175,7 +176,7 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 
 - 模块 ID：...
 - 成功完成任务数：N
-- 产出目录：`.superlooper/outputs/<session_id>/<module_id>/`
-- 产物清单：`.superlooper/outputs/<session_id>/<module_id>/artifact_manifest.json`
+- 产出目录：`.superlooper/outputs/<task_id>/<module_id>/`
+- 产物清单：`.superlooper/outputs/<task_id>/<module_id>/artifact_manifest.json`
 - 验证结果：...
 - 遇到的问题：...

@@ -6,13 +6,20 @@ import unittest
 from pathlib import Path
 
 
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import create_session
+
+
 class CrossPlatformEquivalenceTest(unittest.TestCase):
     def setUp(self):
         self.repo_root = Path(__file__).resolve().parents[1]
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace_root = Path(self.temp_dir.name)
-        self.session_id = "session_cross_platform"
-        self.manifests_dir = self.workspace_root / ".superlooper" / "manifests" / self.session_id
+        self.task_id = "session_cross_platform"
+        self.manifests_dir = self.workspace_root / ".superlooper" / "manifests" / self.task_id
         self.manifests_dir.mkdir(parents=True, exist_ok=True)
         self._write_session_fixture()
 
@@ -20,36 +27,73 @@ class CrossPlatformEquivalenceTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _write_session_fixture(self):
-        ui_dir = self.workspace_root / ".superlooper" / "context" / self.session_id / "ui"
+        ui_dir = self.workspace_root / ".superlooper" / "context" / self.task_id / "ui"
         ui_dir.mkdir(parents=True, exist_ok=True)
         for filename in ("ui-spec.md", "page-map.md", "interaction-flow.md", "ui-handoff.md"):
             (ui_dir / filename).write_text(f"# {filename}\n", encoding="utf-8")
         (ui_dir / "preview.html").write_text("<!doctype html><html><body></body></html>\n", encoding="utf-8")
 
-        design_dir = self.workspace_root / ".superlooper" / "context" / self.session_id / "design"
+        design_dir = self.workspace_root / ".superlooper" / "context" / self.task_id / "design"
         design_dir.mkdir(parents=True, exist_ok=True)
         for filename in ("architecture.md", "tech-stack.md", "project-profile.md", "initialization-advice.md"):
             (design_dir / filename).write_text(f"# {filename}\n", encoding="utf-8")
 
-        reports_dir = self.workspace_root / ".superlooper" / "reports" / self.session_id
+        reports_dir = self.workspace_root / ".superlooper" / "reports" / self.task_id
         reports_dir.mkdir(parents=True, exist_ok=True)
         (reports_dir / "initialization_report.json").write_text(
-            json.dumps({"session_id": self.session_id, "status": "success"}) + "\n",
+            json.dumps({"task_id": self.task_id, "status": "success"}) + "\n",
             encoding="utf-8",
         )
         state_dir = self.workspace_root / ".superlooper" / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / f"{self.session_id}.json").write_text(
+        (state_dir / f"{self.task_id}.json").write_text(
             json.dumps(
                 {
-                    "session_id": self.session_id,
+                    "task_id": self.task_id,
+                    "task_name": None,
+                    "workspace_root": str(self.workspace_root.resolve()),
+                    "requirement_path": str((self.workspace_root / "requirements.md").resolve()),
                     "current_phase": "run",
                     "phase_status": "pending",
+                    "generated_files": [],
+                    "reports": [],
+                    "script_events": [],
+                    "last_command": "test",
+                    "last_error": None,
+                    "next_actions": [],
+                    "project_mode": "greenfield",
+                    "workflow_mode": "standard",
+                    "project_category": "springboot",
+                    "project_version": "springboot-3.x",
+                    "project_root": ".",
                     "project_initialized": True,
-                    "initialization_report": f".superlooper/reports/{self.session_id}/initialization_report.json",
+                    "initialization_report": f".superlooper/reports/{self.task_id}/initialization_report.json",
+                    "execution_summary_status": "NOT_STARTED",
+                    "execution_summary_report": None,
+                    "loop_policy": {"max_auto_loop_per_phase": 2},
+                    "loop_state": {
+                        "current_loop_target_phase": None,
+                        "loop_count_by_phase": {},
+                        "last_alignment_status": None,
+                        "last_feedback_report": None,
+                    },
+                    "requirement_alignment_report": None,
+                    "requirement_alignment_passed": False,
+                    "prd_revision": 0,
+                    "ui_revision": 0,
                     "ui_status": "APPROVED",
+                    "ui_output_dir": f".superlooper/context/{self.task_id}/ui/",
                     "ui_artifacts_validated": True,
-                    "ui_output_dir": f".superlooper/context/{self.session_id}/ui/",
+                    "design_revision": 0,
+                    "change_request_count": 0,
+                    "active_feedback_report": None,
+                    "change_impact_report": None,
+                    "affected_modules": [],
+                    "invalidated_artifacts": [],
+                    "rollback_target_phase": None,
+                    "last_user_input_text": None,
+                    "last_user_canonical_action": None,
+                    "pending_user_choice": None,
                 }
             )
             + "\n",
@@ -83,8 +127,8 @@ class CrossPlatformEquivalenceTest(unittest.TestCase):
             str(self.repo_root / "scripts" / script_name),
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--platform",
             platform,
         ]
@@ -109,7 +153,7 @@ class CrossPlatformEquivalenceTest(unittest.TestCase):
             self.workspace_root
             / ".superlooper"
             / "agents"
-            / self.session_id
+            / self.task_id
             / "module_report_export.md"
         ).read_text(encoding="utf-8")
         return manifest, runtime_agent
@@ -119,7 +163,7 @@ class CrossPlatformEquivalenceTest(unittest.TestCase):
         codex_manifest, codex_runtime_agent = self._generate_platform_artifacts("codex")
 
         self.assertEqual(claude_manifest["dag"]["nodes"], codex_manifest["dag"]["nodes"])
-        self.assertEqual(claude_manifest["session_id"], codex_manifest["session_id"])
+        self.assertEqual(claude_manifest["task_id"], codex_manifest["task_id"])
         self.assertEqual(claude_manifest["context"]["prd_path"], codex_manifest["context"]["prd_path"])
         self.assertEqual(claude_manifest["context"]["reports_path"], codex_manifest["context"]["reports_path"])
 
@@ -127,7 +171,7 @@ class CrossPlatformEquivalenceTest(unittest.TestCase):
         codex_context = dict(codex_manifest["context"])
         self.assertEqual(
             claude_context.pop("registered_agents_path"),
-            f".claude/agents/generated/superlooper/{self.session_id}/",
+            f".claude/agents/generated/superlooper/{self.task_id}/",
         )
         self.assertEqual(codex_context.pop("platform_registration"), {"platform": "codex"})
         self.assertEqual(claude_context, codex_context)
@@ -137,10 +181,45 @@ class CrossPlatformEquivalenceTest(unittest.TestCase):
                 self.workspace_root
                 / ".superlooper"
                 / "agents"
-                / self.session_id
+                / self.task_id
                 / "codex-dispatch.json"
             ).exists()
         )
+
+    def test_windows_path_key_collapses_case_separators_and_trailing_dots_or_spaces(self):
+        expected = "src/foo.java"
+        for value in (
+            "src/Foo.java",
+            "SRC/foo.java",
+            "src\\foo.java",
+            "src/foo.java.",
+            "src/foo.java ",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(create_session.windows_path_key(value), expected)
+
+    def test_safe_relative_path_rejects_windows_equivalent_protected_roots(self):
+        protected_roots = {".git", ".claude", ".superlooper"}
+        for value in (
+            ".GIT/config",
+            ".git./config",
+            ".git /config",
+            ".git\\config",
+            ".CLAUDE/settings.json",
+            ".superlooper.\\state.json",
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(
+                    create_session.is_safe_relative_path(
+                        value,
+                        protected_roots=protected_roots,
+                    )
+                )
+
+    def test_safe_relative_path_rejects_segments_that_normalize_to_empty_dot_or_dotdot(self):
+        for value in (". /file.txt", ".. /file.txt", "src/ /file.txt"):
+            with self.subTest(value=value):
+                self.assertFalse(create_session.is_safe_relative_path(value))
 
 
 if __name__ == "__main__":

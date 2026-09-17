@@ -3,12 +3,16 @@ import json
 import os
 import re
 import sys
+import unicodedata
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from schema_validation import SchemaValidationError, SchemaValidator
 
 
-SESSION_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+TASK_ID_PREFIX = "master-framework-"
+TASK_NAME_MAX_LENGTH = 120
 PROTECTED_ROOTS = {".git", ".hg", ".svn"}
 PROJECT_MODES = {"greenfield", "brownfield", "brownfield-selective", "single_change", "ambiguous"}
 WORKFLOW_MODES = {"standard", "strict_review"}
@@ -40,9 +44,12 @@ class SessionCreateError(Exception):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Create SUPERLOOPER runtime session directories and initial state.")
+    parser = argparse.ArgumentParser(description="Create SUPERLOOPER runtime task directories and initial state.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", help="执行任务唯一 ID；缺省时按本地时间自动生成。")
+    parser.add_argument("--session-id", help=argparse.SUPPRESS)
+    parser.add_argument("--new-task", action="store_true", help="忽略 identity 环境变量并创建系统生成 ID 的新任务。")
+    parser.add_argument("--task-name", help="可选任务名称，仅用于展示，可重复。")
     parser.add_argument("--requirement-path", required=True, help="原始需求文档路径。")
     parser.add_argument("--project-mode", choices=sorted(PROJECT_MODES), default="greenfield", help="项目模式，默认 greenfield。")
     return parser.parse_args()
@@ -81,10 +88,103 @@ def session_status_values(schema=None):
     return values
 
 
-def validate_session_id(session_id):
-    if not session_id or not SESSION_PATTERN.match(session_id) or session_id in (".", ".."):
-        raise SessionStateValidationError("session_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
-    return session_id
+def validate_task_id(task_id):
+    if not task_id or not TASK_ID_PATTERN.match(task_id) or task_id in (".", ".."):
+        raise SessionStateValidationError("task_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
+    return task_id
+
+
+def normalize_task_name(task_name):
+    if task_name is None:
+        return None
+    if not isinstance(task_name, str):
+        raise SessionStateValidationError("task_name 必须为字符串或 null。")
+    if any(unicodedata.category(character) in {"Cc", "Zl", "Zp"} for character in task_name):
+        raise SessionStateValidationError("task_name 不能包含换行、行分隔符或控制字符。")
+    normalized = task_name.strip()
+    if not normalized:
+        raise SessionStateValidationError("task_name 不能为空。")
+    if len(normalized) > TASK_NAME_MAX_LENGTH:
+        raise SessionStateValidationError(f"task_name 不能超过 {TASK_NAME_MAX_LENGTH} 个字符。")
+    return normalized
+
+
+def normalize_legacy_identity(record, label="记录"):
+    if not isinstance(record, dict):
+        raise SessionStateValidationError(f"{label} 顶层必须是 object。")
+    normalized = dict(record)
+    has_task_id = "task_id" in normalized
+    has_session_id = "session_id" in normalized
+    if has_task_id and has_session_id:
+        raise SessionStateValidationError(f"{label} 不能同时包含 task_id 和 legacy session_id。")
+    if has_session_id:
+        normalized["task_id"] = normalized.pop("session_id")
+    return normalized
+
+
+def normalize_legacy_state(state):
+    legacy_state = isinstance(state, dict) and "session_id" in state and "task_id" not in state
+    normalized = normalize_legacy_identity(state, "state")
+    if legacy_state and "task_name" not in normalized:
+        normalized["task_name"] = None
+    if legacy_state and "affected_modules" not in normalized:
+        normalized["affected_modules"] = []
+    return normalized
+
+
+def resolve_explicit_task_id(task_id, legacy_session_id, required=False):
+    if task_id and legacy_session_id and task_id != legacy_session_id:
+        raise SessionStateValidationError("--task-id 与 legacy --session-id 不能同时指定不同值。")
+    value = task_id or legacy_session_id
+    if required and not value:
+        raise SessionStateValidationError("必须提供 --task-id；旧调用可使用 legacy --session-id。")
+    return validate_task_id(value) if value else None
+
+
+def resolve_create_task_id(task_id, legacy_session_id, new_task, environ=None):
+    if new_task:
+        if task_id or legacy_session_id:
+            raise SessionStateValidationError("--new-task 不能与 --task-id 或 legacy --session-id 同时使用。")
+        return None
+    environ = environ or os.environ
+    canonical = task_id if task_id is not None else environ.get("SUPERLOOPER_TASK_ID")
+    legacy = legacy_session_id if legacy_session_id is not None else environ.get("SUPERLOOPER_SESSION_ID")
+    return resolve_explicit_task_id(canonical, legacy)
+
+
+def task_id_for_time(value):
+    return TASK_ID_PREFIX + value.strftime("%Y%m%d%H%M%S")
+
+
+def reserve_task_id(workspace_root, explicit_task_id=None, now=None):
+    state_dir = workspace_root / ".superlooper" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    base_time = now or datetime.now()
+    offset = 0
+    while True:
+        task_id = explicit_task_id or task_id_for_time(base_time + timedelta(seconds=offset))
+        state_path = state_file_path(workspace_root, task_id)
+        reservation_path = state_dir / f".{task_id}.reserve"
+        if state_path.exists():
+            if explicit_task_id:
+                raise SessionCreateError(f"task_id 已存在：{task_id}")
+            offset += 1
+            continue
+        try:
+            with reservation_path.open("x", encoding="utf-8") as reservation:
+                reservation.write(str(os.getpid()))
+        except FileExistsError:
+            if explicit_task_id:
+                raise SessionCreateError(f"task_id 正在创建：{task_id}")
+            offset += 1
+            continue
+        if state_path.exists():
+            reservation_path.unlink(missing_ok=True)
+            if explicit_task_id:
+                raise SessionCreateError(f"task_id 已存在：{task_id}")
+            offset += 1
+            continue
+        return task_id, reservation_path
 
 
 def resolve_workspace_root(value):
@@ -96,21 +196,65 @@ def resolve_workspace_root(value):
     return path
 
 
+def portable_path_parts(value):
+    if not isinstance(value, str):
+        return []
+    return value.replace("\\", "/").split("/")
+
+
+def windows_path_key(value):
+    return "/".join(
+        part.rstrip(" .").casefold()
+        for part in portable_path_parts(value)
+    )
+
+
+def is_safe_relative_path(value, protected_roots=None):
+    if (
+        not isinstance(value, str)
+        or not value
+        or ":" in value
+        or value.replace("\\", "/").startswith("/")
+    ):
+        return False
+    parts = portable_path_parts(value)
+    if len(parts) > 1 and parts[-1] == "":
+        parts = parts[:-1]
+    normalized_parts = [part.rstrip(" .").casefold() for part in parts]
+    if not normalized_parts or any(not part for part in normalized_parts):
+        return False
+    protected = {
+        windows_path_key(root)
+        for root in (protected_roots or set())
+    }
+    return normalized_parts[0] not in protected
+
+
 def resolve_requirement_path(workspace_root, value):
     if not isinstance(value, str) or not value.strip():
         raise SessionCreateError("requirement_path 必须是非空字符串。")
-    raw = Path(value.strip())
-    if not raw.is_absolute() and (":" in value or raw.drive):
-        raise SessionCreateError(f"requirement_path 不是安全路径：{value}")
+    stripped = value.strip()
+    raw = Path(stripped)
     if raw.is_absolute():
         path = raw.resolve()
     else:
-        if ".." in raw.parts:
+        if not is_safe_relative_path(
+            stripped,
+            protected_roots=PROTECTED_ROOTS,
+        ):
             raise SessionCreateError(f"requirement_path 不是安全路径：{value}")
-        normalized_parts = [part for part in raw.parts if part not in ("", ".")]
-        if normalized_parts and normalized_parts[0] in PROTECTED_ROOTS:
-            raise SessionCreateError(f"requirement_path 不是安全路径：{value}")
-        path = (workspace_root / raw).resolve()
+        path = workspace_root.joinpath(
+            *portable_path_parts(stripped)
+        ).resolve()
+    try:
+        relative = path.relative_to(workspace_root)
+    except ValueError:
+        relative = None
+    if relative is not None and not is_safe_relative_path(
+        relative.as_posix(),
+        protected_roots=PROTECTED_ROOTS,
+    ):
+        raise SessionCreateError(f"requirement_path 不是安全路径：{value}")
     if not path.exists():
         raise SessionCreateError(f"requirement_path 不存在：{path}")
     if not path.is_file():
@@ -118,8 +262,8 @@ def resolve_requirement_path(workspace_root, value):
     return path
 
 
-def state_file_path(workspace_root, session_id):
-    return workspace_root / ".superlooper" / "state" / f"{session_id}.json"
+def state_file_path(workspace_root, task_id):
+    return workspace_root / ".superlooper" / "state" / f"{task_id}.json"
 
 
 def load_state_from_path(state_path):
@@ -134,8 +278,7 @@ def load_state_from_path(state_path):
 
 def validate_session_state(state, schema=None):
     schema = schema or load_session_schema()
-    if not isinstance(state, dict):
-        raise SessionStateValidationError("state 顶层必须是 object。")
+    state = normalize_legacy_state(state)
     try:
         schema_errors = SchemaValidator().validate(state, schema, "state")
     except SchemaValidationError as exc:
@@ -157,7 +300,10 @@ def validate_session_state(state, schema=None):
         if extra:
             raise SessionStateValidationError(f"state 存在未声明字段：{', '.join(sorted(extra))}")
 
-    validate_session_id(state.get("session_id"))
+    validate_task_id(state.get("task_id"))
+    normalized_task_name = normalize_task_name(state.get("task_name"))
+    if normalized_task_name != state.get("task_name"):
+        raise SessionStateValidationError("task_name 必须为去除首尾空白后的规范值。")
     require_non_empty_string(state, "workspace_root")
     require_non_empty_string(state, "requirement_path")
 
@@ -213,6 +359,9 @@ def validate_session_state(state, schema=None):
     require_non_negative_integer(state, "change_request_count")
     require_string_or_none(state, "active_feedback_report")
     require_string_or_none(state, "change_impact_report")
+    require_string_list(state, "affected_modules")
+    if len(state["affected_modules"]) != len(set(state["affected_modules"])):
+        raise SessionStateValidationError("affected_modules 不能包含重复模块。")
     require_string_list(state, "invalidated_artifacts")
     rollback_target_phase = state.get("rollback_target_phase")
     if rollback_target_phase is not None and rollback_target_phase not in ROLLBACK_TARGET_PHASES:
@@ -313,14 +462,15 @@ def validate_loop_state(value):
 
 
 def write_state(state_path, state):
-    validate_session_state(state)
-    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    canonical_state = validate_session_state(state)
+    state_path.write_text(json.dumps(canonical_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def build_initial_state(session_id, workspace_root, requirement_path, project_mode="greenfield"):
+def build_initial_state(task_id, workspace_root, requirement_path, project_mode="greenfield", task_name=None):
     return validate_session_state(
         {
-            "session_id": session_id,
+            "task_id": task_id,
+            "task_name": normalize_task_name(task_name),
             "workspace_root": str(workspace_root),
             "requirement_path": str(requirement_path),
             "current_phase": "prd",
@@ -358,6 +508,7 @@ def build_initial_state(session_id, workspace_root, requirement_path, project_mo
             "change_request_count": 0,
             "active_feedback_report": None,
             "change_impact_report": None,
+            "affected_modules": [],
             "invalidated_artifacts": [],
             "rollback_target_phase": None,
             "last_user_input_text": None,
@@ -367,19 +518,31 @@ def build_initial_state(session_id, workspace_root, requirement_path, project_mo
     )
 
 
-def ensure_session_layout(workspace_root, session_id):
+def ensure_session_layout(workspace_root, task_id):
     runtime_root = workspace_root / ".superlooper"
     created_paths = [
-        runtime_root / "context" / session_id,
-        runtime_root / "reports" / session_id,
-        runtime_root / "manifests" / session_id,
-        runtime_root / "agents" / session_id,
-        runtime_root / "outputs" / session_id,
+        runtime_root / "context" / task_id,
+        runtime_root / "reports" / task_id,
+        runtime_root / "manifests" / task_id,
+        runtime_root / "agents" / task_id,
+        runtime_root / "outputs" / task_id,
         runtime_root / "state",
     ]
+    new_task_paths = []
     for path in created_paths:
+        existed = path.exists()
         path.mkdir(parents=True, exist_ok=True)
-    return created_paths, state_file_path(workspace_root, session_id)
+        if not existed and path.name == task_id:
+            new_task_paths.append(path)
+    return created_paths, state_file_path(workspace_root, task_id), new_task_paths
+
+
+def cleanup_new_task_paths(paths):
+    for path in reversed(paths):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
 
 
 def write_state_if_missing(state_path, state):
@@ -389,8 +552,9 @@ def write_state_if_missing(state_path, state):
     return True
 
 
-def print_result(session_id, requirement_path, state_path, created_paths, state_created):
-    print(f"session_id: {session_id}")
+def print_result(task_id, task_name, requirement_path, state_path, created_paths, state_created):
+    print(f"task_id: {task_id}")
+    print(f"task_name: {task_name if task_name is not None else '(none)'}")
     print(f"requirement_path: {requirement_path}")
     print(f"state_file: {state_path}")
     print(f"state_created: {'yes' if state_created else 'no'}")
@@ -401,18 +565,49 @@ def print_result(session_id, requirement_path, state_path, created_paths, state_
 
 def main():
     args = parse_args()
+    reservation_path = None
+    new_task_paths = []
+    state_written = False
     try:
-        session_id = validate_session_id(args.session_id)
         workspace_root = resolve_workspace_root(args.workspace_root)
         requirement_path = resolve_requirement_path(workspace_root, args.requirement_path)
-        created_paths, state_path = ensure_session_layout(workspace_root, session_id)
-        state = build_initial_state(session_id, workspace_root, requirement_path, args.project_mode)
-        state_created = write_state_if_missing(state_path, state)
-        print_result(session_id, requirement_path, state_path, created_paths, state_created)
+        task_name = normalize_task_name(args.task_name)
+        explicit_task_id = resolve_create_task_id(args.task_id, args.session_id, args.new_task)
+        if explicit_task_id is not None:
+            existing_state_path = state_file_path(workspace_root, explicit_task_id)
+            if existing_state_path.exists():
+                state = load_state_from_path(existing_state_path)
+                if state["task_id"] != explicit_task_id:
+                    raise SessionCreateError("state task_id 与请求的 task_id 不一致。")
+                if Path(state["requirement_path"]).resolve() != requirement_path:
+                    raise SessionCreateError("已有 task 的 requirement_path 与本次输入不一致。")
+                created_paths, state_path, _ = ensure_session_layout(workspace_root, explicit_task_id)
+                print_result(
+                    explicit_task_id,
+                    state["task_name"],
+                    requirement_path,
+                    state_path,
+                    created_paths,
+                    state_created=False,
+                )
+                return 0
+        task_id, reservation_path = reserve_task_id(workspace_root, explicit_task_id=explicit_task_id)
+        created_paths, state_path, new_task_paths = ensure_session_layout(workspace_root, task_id)
+        state = build_initial_state(task_id, workspace_root, requirement_path, args.project_mode, task_name)
+        write_state(state_path, state)
+        state_written = True
+        reservation_path.unlink(missing_ok=True)
+        reservation_path = None
+        print_result(task_id, task_name, requirement_path, state_path, created_paths, state_created=True)
         return 0
-    except (SessionCreateError, SessionStateValidationError) as exc:
-        print(f"创建 session 失败：{exc}", file=sys.stderr)
+    except (OSError, SessionCreateError, SessionStateValidationError) as exc:
+        print(f"创建 task 失败：{exc}", file=sys.stderr)
         return 1
+    finally:
+        if reservation_path is not None:
+            reservation_path.unlink(missing_ok=True)
+        if not state_written:
+            cleanup_new_task_paths(new_task_paths)
 
 
 if __name__ == "__main__":

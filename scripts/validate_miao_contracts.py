@@ -1,20 +1,33 @@
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 from pathlib import Path
 
+from create_session import (
+    SessionStateValidationError,
+    is_safe_relative_path,
+    normalize_legacy_identity,
+    resolve_explicit_task_id,
+    windows_path_key,
+)
 from schema_validation import SchemaValidationError, SchemaValidator
+from snapshot_digest import compute_tree_digest
 
 
-SESSION_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
-PROTECTED_ROOTS = {".superlooper", ".git", ".svn", ".hg"}
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+SNAPSHOT_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+PROTECTED_ROOTS = {".superlooper", ".git", ".svn", ".hg", ".claude", ".env"}
 MODULE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 REQ_REF_PATTERN = re.compile(r"^REQ-[0-9]{3,}$")
 DEC_REF_PATTERN = re.compile(r"^DEC-[0-9]{3,}$")
 OPEN_REF_PATTERN = re.compile(r"^OPEN-[0-9]{3,}$")
 AC_REF_PATTERN = re.compile(r"^AC-[0-9]{3,}$")
+PRD_TRACEABILITY_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:REQ|AC|DEC|OPEN)-[0-9]{3,}(?![A-Za-z0-9_-])"
+)
 NODE_PATTERN = re.compile(r"^(mod_[a-z][a-z0-9_]*|task_[a-z0-9_]+)$")
 UI_TRACEABILITY_FIELDS = ["ui_refs", "interaction_refs", "component_refs", "ui_acceptance_refs"]
 BROWNFIELD_MODULE_LIST_FIELDS = ["allowed_existing_files", "forbidden_files", "integration_points", "test_commands"]
@@ -44,7 +57,7 @@ JAVA_FILE_ROLES = {
     "other",
 }
 MODULE_PAYLOAD_ANCHORS = [
-    "session_id",
+    "task_id",
     "module_id",
     "module_payload",
     "design_docs_path",
@@ -74,7 +87,7 @@ MODULE_PAYLOAD_ANCHORS = [
 ]
 DYNAMIC_AGENT_CONSTRAINT_TITLE = "## Runtime Module Constraints"
 DYNAMIC_AGENT_CONSTRAINT_FIELDS = [
-    "session_id",
+    "task_id",
     "module_id",
     "target_files",
     "file_roles",
@@ -170,7 +183,7 @@ ALIGNMENT_STATUSES = {"PASS", "FAIL", "BLOCKED"}
 ALIGNMENT_LOOP_TARGET_PHASES = {"prd", "ui_design", "design", "initialization", "run", "requirement_alignment"}
 UI_REQUIRED_FILES = ["ui-spec.md", "page-map.md", "interaction-flow.md", "ui-handoff.md", "preview.html"]
 UI_SPEC_REQUIRED_FIELDS = [
-    "session_id",
+    "task_id",
     "ui_status",
     "prd_path",
     "ui_output_dir",
@@ -189,22 +202,22 @@ class ContractError(Exception):
 
 
 class ContractValidator:
-    def __init__(self, workspace_root, session_id, agents_dir=None, module_split=None, execution_manifest=None, outputs_root=None, runtime_agents_dir=None, registered_agents_dir=None, plugin_root=None):
+    def __init__(self, workspace_root, task_id, agents_dir=None, module_split=None, execution_manifest=None, outputs_root=None, runtime_agents_dir=None, registered_agents_dir=None, plugin_root=None):
         self.root = Path(workspace_root).resolve()
         self.plugin_root = Path(plugin_root).resolve() if plugin_root else Path(__file__).resolve().parents[1]
-        self.session_id = session_id
+        self.task_id = task_id
         self.errors = []
         self.agents_dir = self._resolve_plugin_path(agents_dir, self.plugin_root / "agents")
-        self.runtime_agents_dir = self._resolve_scoped_path(runtime_agents_dir, self.root / ".superlooper" / "agents" / self.session_id)
-        self.registered_agents_dir = self._resolve_scoped_path(registered_agents_dir, self.root / ".claude" / "agents" / "generated" / "superlooper" / self.session_id)
-        self.manifests_dir = self.root / ".superlooper" / "manifests" / self.session_id
+        self.runtime_agents_dir = self._resolve_scoped_path(runtime_agents_dir, self.root / ".superlooper" / "agents" / self.task_id)
+        self.registered_agents_dir = self._resolve_scoped_path(registered_agents_dir, self.root / ".claude" / "agents" / "generated" / "superlooper" / self.task_id)
+        self.manifests_dir = self.root / ".superlooper" / "manifests" / self.task_id
         self.module_split_path = self._resolve_scoped_path(module_split, self.manifests_dir / "module-split.json")
         self.execution_manifest_path = self._resolve_scoped_path(execution_manifest, self.manifests_dir / "execution_manifest.json")
         self.outputs_root = self._resolve_scoped_path(outputs_root, self.root / ".superlooper" / "outputs")
-        self.reports_dir = self.root / ".superlooper" / "reports" / self.session_id
-        self.state_path = self.root / ".superlooper" / "state" / f"{self.session_id}.json"
-        self.dag_state_path = self.root / ".superlooper" / "state" / f"{self.session_id}.dag.json"
-        self.event_log_path = self.root / ".superlooper" / "events" / f"{self.session_id}.jsonl"
+        self.reports_dir = self.root / ".superlooper" / "reports" / self.task_id
+        self.state_path = self.root / ".superlooper" / "state" / f"{self.task_id}.json"
+        self.dag_state_path = self.root / ".superlooper" / "state" / f"{self.task_id}.dag.json"
+        self.event_log_path = self.root / ".superlooper" / "events" / f"{self.task_id}.jsonl"
 
     def _resolve_scoped_path(self, value, default):
         path = Path(value) if value else Path(default)
@@ -228,7 +241,7 @@ class ContractValidator:
         return path.resolve()
 
     def validate(self, scope):
-        self._validate_session_id()
+        self._validate_task_id()
         if scope in ("interaction-flow", "all"):
             self.validate_interaction_flow(required=True)
         if scope in ("module-split", "all"):
@@ -243,6 +256,8 @@ class ContractValidator:
             self.validate_test_report(required=True)
         if scope in ("apply-report", "reports"):
             self.validate_apply_report(required=True)
+        if scope == "initialization-advice":
+            self.validate_initialization_advice(required=True)
         if scope in ("initialization-report", "reports"):
             self.validate_initialization_report(required=True)
         if scope in ("requirement-alignment-report", "reports"):
@@ -263,6 +278,7 @@ class ContractValidator:
             self.validate_code_review_report(required=False)
             self.validate_test_report(required=False)
             self.validate_apply_report(required=False)
+            self.validate_initialization_advice(required=False)
             self.validate_initialization_report(required=False)
             self.validate_requirement_alignment_report(required=False)
             self.validate_execution_summary(required=False)
@@ -504,14 +520,15 @@ class ContractValidator:
                         if not self._safe_relative_path(target_file):
                             self.errors.append(f"{target_label} 不是安全相对路径：{target_file}")
                             continue
-                        if target_file in module_target_files:
+                        target_key = windows_path_key(target_file)
+                        if target_key in module_target_files:
                             self.errors.append(f"{path}.target_files 存在重复路径：{target_file}")
-                        module_target_files.add(target_file)
-                        owner = target_file_owners.get(target_file)
+                        module_target_files.add(target_key)
+                        owner = target_file_owners.get(target_key)
                         if owner and owner != module_id:
                             self.errors.append(f"module-split.modules target_files 存在跨模块重复路径：{target_file} 同时属于 {owner}, {module_id}")
                         else:
-                            target_file_owners[target_file] = module_id
+                            target_file_owners[target_key] = module_id
                         if java_project:
                             self._validate_java_target_file(target_file, target_label)
             file_roles = module.get("file_roles")
@@ -589,9 +606,19 @@ class ContractValidator:
         if not isinstance(manifest, dict):
             self.errors.append("Execution Manifest 顶层必须是 object。")
             return None
+        dag = manifest.get("dag")
+        nodes = dag.get("nodes") if isinstance(dag, dict) else None
+        if isinstance(nodes, list):
+            for index, node in enumerate(nodes):
+                payload = node.get("payload") if isinstance(node, dict) else None
+                if isinstance(payload, dict):
+                    normalized_payload = self._normalize_identity(payload, f"Execution Manifest dag.nodes[{index}].payload")
+                    if normalized_payload is None:
+                        return None
+                    node["payload"] = normalized_payload
         self._validate_schema(manifest, "execution-manifest.schema.json", "Execution Manifest")
-        if manifest.get("session_id") != self.session_id:
-            self.errors.append("Execution Manifest session_id 必须与当前 session_id 一致。")
+        if manifest.get("task_id") != self.task_id:
+            self.errors.append("Execution Manifest task_id 必须与当前 task_id 一致。")
         if manifest.get("granularity") != "module":
             self.errors.append("Execution Manifest granularity 必须为 module。")
         context = manifest.get("context")
@@ -636,8 +663,11 @@ class ContractValidator:
                         self.errors.append(f"{path}.agent 必须为 {expected_agent}。")
                     self._validate_module_payload_anchors(path, node.get("payload"), module_id)
                     self._validate_dynamic_agent(agent, node.get("payload"), require_registered=platform == "claude")
-            elif isinstance(agent, str):
-                self._validate_static_agent(agent)
+            else:
+                if node_id in SYSTEM_CHAIN:
+                    self._validate_system_payload(node_id, node.get("payload"))
+                if isinstance(agent, str):
+                    self._validate_static_agent(agent)
         self._validate_module_node_set(node_map)
         self._validate_dag_links(node_map)
         self._validate_system_chain(node_map)
@@ -650,25 +680,57 @@ class ContractValidator:
             if required:
                 self.errors.append(f"模块 outputs 根目录不存在：{self.outputs_root}")
             return
+        task_outputs = self.outputs_root / self.task_id
+        resolved_task_outputs = task_outputs
+        if task_outputs.exists():
+            resolved_task_outputs = self._resolve_artifact_path(
+                task_outputs,
+                self.outputs_root,
+                "task 模块产物目录",
+            )
+            if resolved_task_outputs is None:
+                return
         module_ids = self._module_ids_from_manifest(manifest)
         if not module_ids:
-            module_ids = [p.name for p in (self.outputs_root / self.session_id).iterdir() if p.is_dir()] if (self.outputs_root / self.session_id).exists() else []
+            module_ids = [p.name for p in task_outputs.iterdir() if p.is_dir()] if task_outputs.exists() else []
         for module_id in module_ids:
-            module_dir = self.outputs_root / self.session_id / module_id
-            artifact_path = module_dir / "artifact_manifest.json"
+            module_dir = resolved_task_outputs / module_id
+            if not module_dir.is_dir():
+                self.errors.append(f"模块产物目录不存在：{module_dir}")
+                continue
+            resolved_module_dir = self._resolve_artifact_path(
+                module_dir,
+                resolved_task_outputs,
+                f"{module_id} 模块产物目录",
+            )
+            if resolved_module_dir is None:
+                continue
+            if resolved_module_dir != module_dir:
+                self.errors.append(
+                    f"{module_id} 模块产物目录不在对应授权目录内：{module_dir}"
+                )
+                continue
+            artifact_path = resolved_module_dir / "artifact_manifest.json"
             if not artifact_path.exists():
                 self.errors.append(f"缺少 artifact_manifest.json：{artifact_path}")
                 continue
-            artifact = self._read_json(artifact_path)
-            self._validate_artifact(module_id, module_dir, artifact, target_files_by_module.get(module_id), java_project)
+            resolved_artifact_path = self._resolve_artifact_path(
+                artifact_path,
+                resolved_module_dir,
+                f"{module_id} artifact_manifest.json",
+            )
+            if resolved_artifact_path is None:
+                continue
+            artifact = self._read_json(resolved_artifact_path)
+            self._validate_artifact(module_id, resolved_module_dir, artifact, target_files_by_module.get(module_id), java_project)
 
     def _validate_artifact(self, module_id, module_dir, artifact, target_files=None, java_project=False):
         if not isinstance(artifact, dict):
             self.errors.append(f"{module_id} artifact_manifest 顶层必须是 object。")
             return
         self._validate_schema(artifact, "artifact-manifest.schema.json", f"{module_id} artifact_manifest")
-        if artifact.get("session_id") != self.session_id:
-            self.errors.append(f"{module_id} artifact session_id 不一致。")
+        if artifact.get("task_id") != self.task_id:
+            self.errors.append(f"{module_id} artifact task_id 不一致。")
         if artifact.get("module_id") != module_id:
             self.errors.append(f"{module_id} artifact module_id 不一致。")
         expected_agent = f"module_{module_id}"
@@ -684,7 +746,31 @@ class ContractValidator:
             self.errors.append(f"{module_id} produced_files 必须是数组。")
             return
         declared = set()
-        allowed_targets = set(target_files or [])
+        allowed_targets = {
+            windows_path_key(value)
+            for value in (target_files or [])
+        }
+        actual_files = {}
+        for actual_path in module_dir.rglob("*"):
+            if not actual_path.is_file() or actual_path.name == "artifact_manifest.json":
+                continue
+            relative = str(actual_path.relative_to(module_dir)).replace("\\", "/")
+            resolved_actual_path = self._resolve_artifact_path(
+                actual_path,
+                module_dir,
+                f"{module_id} 模块文件 {relative}",
+            )
+            if resolved_actual_path is None:
+                continue
+            relative_key = windows_path_key(relative)
+            existing = actual_files.get(relative_key)
+            if existing is not None:
+                self.errors.append(
+                    f"{module_id} 模块实际文件存在 Windows 等价重复路径："
+                    f"{existing} 与 {relative}"
+                )
+                continue
+            actual_files[relative_key] = relative
         for index, item in enumerate(produced_files):
             path = f"{module_id}.produced_files[{index}]"
             if not isinstance(item, dict):
@@ -694,10 +780,11 @@ class ContractValidator:
             if not self._safe_relative_path(relative):
                 self.errors.append(f"{path}.path 不是安全相对路径：{relative}")
                 continue
-            if relative in declared:
+            relative_key = windows_path_key(relative)
+            if relative_key in declared:
                 self.errors.append(f"{module_id}.produced_files 存在重复路径：{relative}")
-            declared.add(relative)
-            if allowed_targets and relative not in allowed_targets:
+            declared.add(relative_key)
+            if allowed_targets and relative_key not in allowed_targets:
                 self.errors.append(f"{path}.path 未包含在 module-split target_files 中：{relative}")
             if java_project:
                 self._validate_java_target_file(relative, f"{path}.path")
@@ -707,9 +794,8 @@ class ContractValidator:
                 self.errors.append(f"{path}.operation 不合法；当前合并与应用链路仅支持 create / modify。")
             if not isinstance(item.get("required_for_merge"), bool):
                 self.errors.append(f"{path}.required_for_merge 必须是 boolean。")
-            target = module_dir / relative
-            if item.get("required_for_merge") is True and not target.exists():
-                self.errors.append(f"{path}.path 声明文件不存在：{target}")
+            if item.get("required_for_merge") is True and relative_key not in actual_files:
+                self.errors.append(f"{path}.path 声明文件不存在：{module_dir / relative}")
         notes = artifact.get("notes")
         verification = artifact.get("verification")
         if not isinstance(verification, dict):
@@ -718,12 +804,10 @@ class ContractValidator:
             self._validate_artifact_verification(module_id, status, verification, notes)
         if not isinstance(notes, list):
             self.errors.append(f"{module_id}.notes 必须是数组。")
-        actual_files = {
-            str(path.relative_to(module_dir)).replace("\\", "/")
-            for path in module_dir.rglob("*")
-            if path.is_file() and path.name != "artifact_manifest.json"
-        }
-        undeclared = sorted(actual_files - declared)
+        undeclared = sorted(
+            actual_files[key]
+            for key in actual_files.keys() - declared
+        )
         if undeclared:
             self.errors.append(f"{module_id} 存在未声明文件：{', '.join(undeclared)}")
 
@@ -797,16 +881,16 @@ class ContractValidator:
             if isinstance(value, str) and not self._safe_relative_path(value, allow_protected=True):
                 self.errors.append(f"Execution Manifest context.{field} 不是安全相对路径：{value}")
         expected_paths = {
-            "prd_path": f".superlooper/context/{self.session_id}/prd.md",
-            "design_docs_path": f".superlooper/context/{self.session_id}/design/",
-            "module_split_path": f".superlooper/manifests/{self.session_id}/module-split.json",
-            "runtime_agents_path": f".superlooper/agents/{self.session_id}/",
-            "outputs_path": f".superlooper/outputs/{self.session_id}/",
-            "merged_path": f".superlooper/merged/{self.session_id}/",
-            "reports_path": f".superlooper/reports/{self.session_id}/",
+            "prd_path": f".superlooper/context/{self.task_id}/prd.md",
+            "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+            "module_split_path": f".superlooper/manifests/{self.task_id}/module-split.json",
+            "runtime_agents_path": f".superlooper/agents/{self.task_id}/",
+            "outputs_path": f".superlooper/outputs/{self.task_id}/",
+            "merged_path": f".superlooper/merged/{self.task_id}/",
+            "reports_path": f".superlooper/reports/{self.task_id}/",
         }
         if platform == "claude":
-            expected_paths["registered_agents_path"] = f".claude/agents/generated/superlooper/{self.session_id}/"
+            expected_paths["registered_agents_path"] = f".claude/agents/generated/superlooper/{self.task_id}/"
         for field, expected in expected_paths.items():
             value = context.get(field)
             if isinstance(value, str) and self._normalize_context_path(value) != self._normalize_context_path(expected):
@@ -827,14 +911,86 @@ class ContractValidator:
             return
         self.errors.append(f"{node_path}.payload 必须是非空字符串或 object。")
 
+    def _validate_system_payload(self, node_id, payload):
+        expected_payloads = {
+            "task_code_review": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "outputs_path": f".superlooper/outputs/{self.task_id}/",
+                "reports_path": f".superlooper/reports/{self.task_id}/",
+                "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+                "module_split_path": f".superlooper/manifests/{self.task_id}/module-split.json",
+            },
+            "task_merge": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "outputs_dir": ".superlooper/outputs",
+                "merged_dir": f".superlooper/merged/{self.task_id}",
+                "reports_dir": f".superlooper/reports/{self.task_id}",
+                "code_review_report_path": f".superlooper/reports/{self.task_id}/code_review_report.md",
+            },
+            "task_integration_test": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "merged_path": f".superlooper/merged/{self.task_id}/",
+                "reports_path": f".superlooper/reports/{self.task_id}/",
+                "prd_path": f".superlooper/context/{self.task_id}/prd.md",
+                "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+                "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "merge_report_path": f".superlooper/reports/{self.task_id}/merge_report.json",
+                "test_workspace_path": f".superlooper/test_workspace/{self.task_id}/",
+            },
+            "task_apply_to_workspace": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "merged_dir": f".superlooper/merged/{self.task_id}",
+                "reports_dir": f".superlooper/reports/{self.task_id}",
+                "merge_report_path": f".superlooper/reports/{self.task_id}/merge_report.json",
+                "test_report_path": f".superlooper/reports/{self.task_id}/test_report.md",
+            },
+        }
+        label = f"{node_id}.payload"
+        expected = expected_payloads[node_id]
+        if not isinstance(payload, dict):
+            self.errors.append(f"{label} 必须是 object。")
+            return
+        for field in expected:
+            if field not in payload:
+                self.errors.append(f"{label} 缺少系统执行锚点：{field}")
+        if payload.get("task_id") != self.task_id:
+            self.errors.append(f"{label}.task_id 必须为 {self.task_id}。")
+        for field, expected_value in expected.items():
+            if field == "task_id" or field not in payload:
+                continue
+            value = payload.get(field)
+            if (
+                not isinstance(value, str)
+                or self._normalize_context_path(value)
+                != self._normalize_context_path(expected_value)
+            ):
+                self.errors.append(f"{label}.{field} 必须为 {expected_value}。")
+        extra_fields = sorted(set(payload) - set(expected))
+        if node_id == "task_apply_to_workspace":
+            overwrite_fields = sorted(
+                set(payload) & {"overwrite_existing", "overwrite_files"}
+            )
+            if overwrite_fields:
+                self.errors.append(
+                    f"{label} 禁止默认携带覆盖授权字段：{', '.join(overwrite_fields)}"
+                )
+        for field in extra_fields:
+            self.errors.append(f"{label} 包含未声明字段：{field}")
+
     def _validate_module_payload_anchors(self, node_path, payload, module_id):
         expected_paths = {
-            "design_docs_path": f".superlooper/context/{self.session_id}/design/",
-            "project_profile_path": f".superlooper/context/{self.session_id}/design/project-profile.md",
-            "module_split_path": f".superlooper/manifests/{self.session_id}/module-split.json",
-            "execution_manifest_path": f".superlooper/manifests/{self.session_id}/execution_manifest.json",
-            "output_dir": f".superlooper/outputs/{self.session_id}/{module_id}/",
-            "artifact_manifest_path": f".superlooper/outputs/{self.session_id}/{module_id}/artifact_manifest.json",
+            "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+            "project_profile_path": f".superlooper/context/{self.task_id}/design/project-profile.md",
+            "module_split_path": f".superlooper/manifests/{self.task_id}/module-split.json",
+            "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+            "output_dir": f".superlooper/outputs/{self.task_id}/{module_id}/",
+            "artifact_manifest_path": f".superlooper/outputs/{self.task_id}/{module_id}/artifact_manifest.json",
         }
         if not isinstance(payload, dict):
             self.errors.append(f"{node_path}.payload 必须是 object。")
@@ -842,8 +998,8 @@ class ContractValidator:
         for anchor in MODULE_PAYLOAD_ANCHORS:
             if anchor not in payload:
                 self.errors.append(f"{node_path}.payload 缺少模块执行锚点：{anchor}")
-        if payload.get("session_id") != self.session_id:
-            self.errors.append(f"{node_path}.payload.session_id 必须为 {self.session_id}。")
+        if payload.get("task_id") != self.task_id:
+            self.errors.append(f"{node_path}.payload.task_id 必须为 {self.task_id}。")
         if payload.get("module_id") != module_id:
             self.errors.append(f"{node_path}.payload.module_id 必须为 {module_id}。")
         for field, expected in expected_paths.items():
@@ -942,38 +1098,137 @@ class ContractValidator:
         except OSError as exc:
             self.errors.append(f"动态 agent 文件内容读取失败：{agent}: {exc}")
             return
-        self._validate_dynamic_agent_constraints(agent, runtime_content, payload)
+        runtime_constraints = self._validate_dynamic_agent_constraints(
+            agent,
+            runtime_content,
+            payload,
+        )
         if not require_registered:
             return
         registered_path = self.registered_agents_dir / f"{agent}.md"
         if not registered_path.exists():
             self.errors.append(f"动态 agent 注册入口不存在：{registered_path}")
             return
-        self._validate_agent_frontmatter(registered_path, agent)
+        registered_name = self._registered_agent_name(agent.removeprefix("module_"))
+        self._validate_agent_frontmatter(registered_path, registered_name)
         try:
             registered_content = registered_path.read_text(encoding="utf-8")
         except OSError as exc:
             self.errors.append(f"动态 agent 注册入口内容读取失败：{agent}: {exc}")
             return
-        if runtime_content != registered_content:
-            self.errors.append(f"动态 agent 运行时源文件与注册入口内容不一致：{agent}.md")
+        registered_constraints = self._validate_dynamic_agent_constraints(
+            agent,
+            registered_content,
+            payload,
+        )
+        runtime_semantics = self._dynamic_agent_semantics(
+            runtime_content,
+            runtime_constraints,
+        )
+        registered_semantics = self._dynamic_agent_semantics(
+            registered_content,
+            registered_constraints,
+        )
+        if runtime_semantics != registered_semantics:
+            self.errors.append(f"动态 agent 运行时源文件与注册入口除 name 外语义不一致：{agent}.md")
 
     def _validate_dynamic_agent_constraints(self, agent, content, payload):
         module_id = agent.removeprefix("module_")
+        constraints = self._parse_dynamic_agent_constraints(agent, content)
+        if constraints is None:
+            return None
+        has_task_id = "task_id" in constraints
+        has_session_id = "session_id" in constraints
+        if has_task_id and has_session_id:
+            self.errors.append(f"动态 agent 模块约束不能同时包含 task_id 和 legacy session_id：{agent}.md")
+        elif has_session_id:
+            constraints = dict(constraints)
+            constraints["task_id"] = constraints.pop("session_id")
+        expected = self._expected_dynamic_agent_constraints(module_id, payload)
+        for field in DYNAMIC_AGENT_CONSTRAINT_FIELDS:
+            if field not in constraints:
+                self.errors.append(f"动态 agent 模块约束缺少字段：{field}：{agent}.md")
+                continue
+            if not self._same_typed_value(constraints[field], expected[field]):
+                self.errors.append(
+                    f"动态 agent 模块约束字段值或类型不一致：{field}：{agent}.md"
+                )
+        return constraints
+
+    def _parse_dynamic_agent_constraints(self, agent, content):
         if DYNAMIC_AGENT_CONSTRAINT_TITLE not in content:
             self.errors.append(f"动态 agent 缺少模块约束块：{agent}.md")
-            return
-        if f"module_id: {module_id}" not in content:
-            self.errors.append(f"动态 agent 模块约束 module_id 必须为 {module_id}：{agent}.md")
+            return None
+        section = content.split(DYNAMIC_AGENT_CONSTRAINT_TITLE, 1)[1]
+        match = re.search(r"```ya?ml\s*\n(.*?)\n```", section, re.DOTALL)
+        if match is None:
+            self.errors.append(f"动态 agent 模块约束块缺少 yaml 代码块：{agent}.md")
+            return None
+        constraints = {}
+        for line in match.group(1).splitlines():
+            if not line.strip():
+                continue
+            if line.startswith((" ", "\t")) or ":" not in line:
+                self.errors.append(f"动态 agent 模块约束必须使用顶层 JSON 兼容 YAML：{agent}.md")
+                return None
+            field, raw_value = line.split(":", 1)
+            field = field.strip()
+            if field in constraints:
+                self.errors.append(f"动态 agent 模块约束字段重复：{field}：{agent}.md")
+                return None
+            try:
+                constraints[field] = json.loads(raw_value.strip())
+            except json.JSONDecodeError:
+                self.errors.append(
+                    f"动态 agent 模块约束字段不是 JSON 兼容值：{field}：{agent}.md"
+                )
+                return None
+        return constraints
+
+    def _expected_dynamic_agent_constraints(self, module_id, payload):
+        payload = payload if isinstance(payload, dict) else {}
+        expected = {
+            "task_id": self.task_id,
+            "module_id": module_id,
+            "forbidden_inputs": payload.get("forbidden_inputs", []),
+            "forbidden_outputs": payload.get("forbidden_outputs", []),
+        }
         for field in DYNAMIC_AGENT_CONSTRAINT_FIELDS:
-            if f"{field}:" not in content:
-                self.errors.append(f"动态 agent 模块约束缺少字段：{field}：{agent}.md")
-        if isinstance(payload, dict):
-            target_files = payload.get("target_files")
-            if isinstance(target_files, list):
-                for target_file in target_files:
-                    if isinstance(target_file, str) and target_file not in content:
-                        self.errors.append(f"动态 agent 模块约束缺少 target_file：{target_file}：{agent}.md")
+            if field in expected:
+                continue
+            if field == "overwrite_policy":
+                expected[field] = payload.get(field) or "block_by_default"
+            else:
+                expected[field] = payload.get(field, [])
+        return expected
+
+    def _same_typed_value(self, actual, expected):
+        if type(actual) is not type(expected):
+            return False
+        if isinstance(expected, list):
+            return len(actual) == len(expected) and all(
+                self._same_typed_value(actual_item, expected_item)
+                for actual_item, expected_item in zip(actual, expected)
+            )
+        if isinstance(expected, dict):
+            return actual.keys() == expected.keys() and all(
+                self._same_typed_value(actual[key], expected[key])
+                for key in expected
+            )
+        return actual == expected
+
+    def _dynamic_agent_semantics(self, content, constraints):
+        frontmatter, body = self._parse_agent_document(content)
+        if frontmatter is None:
+            return None
+        frontmatter = dict(frontmatter)
+        frontmatter.pop("name", None)
+        body_without_constraints = body.split(DYNAMIC_AGENT_CONSTRAINT_TITLE, 1)[0].rstrip()
+        return frontmatter, body_without_constraints, constraints
+
+    def _registered_agent_name(self, module_id):
+        task_hash = hashlib.sha256(self.task_id.encode("utf-8")).hexdigest()[:16]
+        return f"module_{module_id}__task_{task_hash}"
 
     def _validate_agent_frontmatter(self, path, expected_name):
         name = self._frontmatter_name(path)
@@ -982,18 +1237,32 @@ class ContractValidator:
 
     def _frontmatter_name(self, path):
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            content = path.read_text(encoding="utf-8")
         except OSError as exc:
             self.errors.append(f"agent 文件读取失败：{path}: {exc}")
             return None
-        if not lines or lines[0].strip() != "---":
+        frontmatter, _ = self._parse_agent_document(content)
+        if frontmatter is None:
             return None
-        for line in lines[1:]:
+        return frontmatter.get("name")
+
+    def _parse_agent_document(self, content):
+        lines = content.splitlines(keepends=True)
+        if not lines or lines[0].strip() != "---":
+            return None, content
+        frontmatter = {}
+        for index, line in enumerate(lines[1:], start=1):
             if line.strip() == "---":
-                return None
-            if line.startswith("name:"):
-                return line.split(":", 1)[1].strip().strip("'\"")
-        return None
+                return frontmatter, "".join(lines[index + 1 :])
+            if ":" not in line:
+                return None, content
+            field, raw_value = line.split(":", 1)
+            raw_value = raw_value.strip()
+            try:
+                frontmatter[field.strip()] = json.loads(raw_value)
+            except json.JSONDecodeError:
+                frontmatter[field.strip()] = raw_value.strip("'\"")
+        return None, content
 
     def _module_ids_from_manifest(self, manifest):
         if not manifest:
@@ -1136,15 +1405,29 @@ class ContractValidator:
             for index, value in enumerate(values):
                 if isinstance(value, str) and value.strip() and not self._safe_relative_path(value):
                     self.errors.append(f"{module_path}.{field}[{index}] 不是安全相对路径：{value}")
-        target_set = set(target_files or []) if isinstance(target_files, list) else set()
+        target_set = {
+            windows_path_key(value)
+            for value in (target_files or [])
+            if isinstance(value, str)
+        }
         allowed_existing_files = module.get("allowed_existing_files")
         if isinstance(allowed_existing_files, list):
-            extra = sorted(value for value in allowed_existing_files if isinstance(value, str) and value not in target_set)
+            extra = sorted(
+                value
+                for value in allowed_existing_files
+                if isinstance(value, str)
+                and windows_path_key(value) not in target_set
+            )
             if extra:
                 self.errors.append(f"{module_path}.allowed_existing_files 必须是 target_files 子集：{', '.join(extra)}")
         forbidden_files = module.get("forbidden_files")
         if isinstance(forbidden_files, list):
-            overlap = sorted(value for value in forbidden_files if isinstance(value, str) and value in target_set)
+            overlap = sorted(
+                value
+                for value in forbidden_files
+                if isinstance(value, str)
+                and windows_path_key(value) in target_set
+            )
             if overlap:
                 self.errors.append(f"{module_path}.forbidden_files 不能与 target_files 重叠：{', '.join(overlap)}")
         overwrite_policy = module.get("overwrite_policy")
@@ -1205,7 +1488,11 @@ class ContractValidator:
         if not isinstance(file_roles, list):
             self.errors.append(f"{module_path}.file_roles 必须是数组。")
             return
-        target_set = set(target_files or [])
+        target_paths = {
+            windows_path_key(path): path
+            for path in (target_files or [])
+            if isinstance(path, str)
+        }
         role_paths = set()
         for index, item in enumerate(file_roles):
             label = f"{module_path}.file_roles[{index}]"
@@ -1214,20 +1501,21 @@ class ContractValidator:
                 continue
             path = item.get("path")
             role = item.get("role")
-            if isinstance(path, str):
-                role_paths.add(path)
+            path_key = windows_path_key(path) if isinstance(path, str) else None
+            if path_key is not None:
+                role_paths.add(path_key)
             if not self._safe_relative_path(path):
                 self.errors.append(f"{label}.path 不是安全相对路径：{path}")
             if role not in JAVA_FILE_ROLES:
                 self.errors.append(f"{label}.role 不合法：{role}")
-            if target_set and path not in target_set:
+            if target_paths and path_key not in target_paths:
                 self.errors.append(f"{label}.path 必须包含在同模块 target_files 中：{path}")
-        if target_set:
-            missing_roles = sorted(target_set - role_paths)
-            for path in missing_roles:
-                self.errors.append(f"{module_path}.target_files 缺少 file_roles 声明：{path}")
+        if target_paths:
+            missing_roles = sorted(target_paths.keys() - role_paths)
+            for path_key in missing_roles:
+                self.errors.append(f"{module_path}.target_files 缺少 file_roles 声明：{target_paths[path_key]}")
 
-    def validate_code_review_report(self, required=False):
+    def validate_code_review_report(self, required=False, require_pass=False):
         report_path = self.reports_dir / "code_review_report.md"
         if not report_path.exists():
             if required:
@@ -1240,9 +1528,11 @@ class ContractValidator:
         status = data.get("code_review_status")
         if status not in ("PASS", "FAIL"):
             self.errors.append(f"{label}.code_review_status 必须为 PASS 或 FAIL。")
-        if data.get("session_id") != self.session_id:
-            self.errors.append(f"{label}.session_id 与当前 session_id 不一致。")
-        expected_report_path = f".superlooper/reports/{self.session_id}/code_review_report.md"
+        elif require_pass and status != "PASS":
+            self.errors.append(f"{label}.code_review_status 必须为 PASS 才能进入 apply。")
+        if data.get("task_id") != self.task_id:
+            self.errors.append(f"{label}.task_id 与当前 task_id 不一致。")
+        expected_report_path = f".superlooper/reports/{self.task_id}/code_review_report.md"
         report_path_value = data.get("report_path")
         if not isinstance(report_path_value, str) or not report_path_value.strip():
             self.errors.append(f"{label}.report_path 必须是非空字符串。")
@@ -1259,16 +1549,30 @@ class ContractValidator:
         if not isinstance(reviewed_modules, list):
             self.errors.append(f"{label}.reviewed_modules 必须是数组。")
             return
-        manifest = self.validate_execution_manifest(required=False)
+        if status != "PASS":
+            return
+        if not reviewed_modules:
+            self.errors.append(
+                f"{label}.reviewed_modules 在 code_review_status=PASS 时必须非空。"
+            )
+        duplicates = sorted(
+            module_id
+            for module_id in set(reviewed_modules)
+            if reviewed_modules.count(module_id) > 1
+        )
+        if duplicates:
+            self.errors.append(
+                f"{label}.reviewed_modules 包含重复模块：{', '.join(duplicates)}"
+            )
+        manifest = self.validate_execution_manifest(required=True)
         module_ids = set(self._module_ids_from_manifest(manifest))
         reviewed = set(reviewed_modules)
-        if module_ids and reviewed != module_ids:
-            missing = sorted(module_ids - reviewed)
-            extra = sorted(reviewed - module_ids)
-            if missing:
-                self.errors.append(f"{label}.reviewed_modules 缺少模块：{', '.join(missing)}")
-            if extra:
-                self.errors.append(f"{label}.reviewed_modules 包含非 Manifest 模块：{', '.join(extra)}")
+        missing = sorted(module_ids - reviewed)
+        extra = sorted(reviewed - module_ids)
+        if missing:
+            self.errors.append(f"{label}.reviewed_modules 缺少模块：{', '.join(missing)}")
+        if extra:
+            self.errors.append(f"{label}.reviewed_modules 包含非 Manifest 模块：{', '.join(extra)}")
 
     def validate_test_report(self, required=False):
         report_path = self.reports_dir / "test_report.md"
@@ -1283,21 +1587,21 @@ class ContractValidator:
         status = data.get("test_status")
         if status not in ("PASS", "FAIL"):
             self.errors.append(f"{label}.test_status 必须为 PASS 或 FAIL。")
-        if data.get("session_id") != self.session_id:
-            self.errors.append(f"{label}.session_id 与当前 session_id 不一致。")
-        expected_tested_path = f".superlooper/merged/{self.session_id}"
+        if data.get("task_id") != self.task_id:
+            self.errors.append(f"{label}.task_id 与当前 task_id 不一致。")
+        expected_tested_path = f".superlooper/merged/{self.task_id}"
         tested_path = data.get("tested_path")
         if not isinstance(tested_path, str) or not tested_path.strip():
             self.errors.append(f"{label}.tested_path 必须是非空字符串。")
         elif self._normalize_context_path(tested_path) != self._normalize_context_path(expected_tested_path):
-            self.errors.append(f"{label}.tested_path 必须为 .superlooper/merged/{self.session_id}/。")
-        expected_merge_report = f".superlooper/reports/{self.session_id}/merge_report.json"
+            self.errors.append(f"{label}.tested_path 必须为 .superlooper/merged/{self.task_id}/。")
+        expected_merge_report = f".superlooper/reports/{self.task_id}/merge_report.json"
         merge_report_path = data.get("merge_report_path")
         if not isinstance(merge_report_path, str) or not merge_report_path.strip():
             self.errors.append(f"{label}.merge_report_path 必须是非空字符串。")
         elif self._normalize_context_path(merge_report_path) != self._normalize_context_path(expected_merge_report):
             self.errors.append(f"{label}.merge_report_path 必须为 {expected_merge_report}。")
-        expected_report_path = f".superlooper/reports/{self.session_id}/test_report.md"
+        expected_report_path = f".superlooper/reports/{self.task_id}/test_report.md"
         report_path_value = data.get("report_path")
         if not isinstance(report_path_value, str) or not report_path_value.strip():
             self.errors.append(f"{label}.report_path 必须是非空字符串。")
@@ -1305,6 +1609,10 @@ class ContractValidator:
             self.errors.append(f"{label}.report_path 必须为 {expected_report_path}。")
         if status != "PASS":
             self.errors.append(f"{label}.test_status 必须为 PASS 才能进入 apply。")
+        else:
+            evidence = self._read_first_json_block(report_path, label)
+            if isinstance(evidence, dict):
+                self._validate_test_evidence(evidence)
         self._validate_ui_acceptance_refs_in_report_body(
             label,
             report_path,
@@ -1336,8 +1644,9 @@ class ContractValidator:
             return
         if report.get("status") != "success":
             self.errors.append("apply_report.status 必须为 success。")
-        if report.get("session_id") != self.session_id:
-            self.errors.append("apply_report.session_id 与当前 session_id 不一致。")
+        if report.get("task_id") != self.task_id:
+            self.errors.append("apply_report.task_id 与当前 task_id 不一致。")
+        self._validate_snapshot_digest_chain(report)
         validation = report.get("workspace_validation")
         if not isinstance(validation, dict):
             self.errors.append("apply_report.workspace_validation 必须是 object。")
@@ -1361,6 +1670,96 @@ class ContractValidator:
         elif failures:
             self.errors.append("apply_report.workspace_validation.failures 必须为空。")
 
+    def _validate_snapshot_digest_chain(self, apply_report):
+        apply_digest = apply_report.get("snapshot_digest")
+        if not isinstance(apply_digest, str) or not SNAPSHOT_DIGEST_PATTERN.fullmatch(apply_digest):
+            self.errors.append(
+                "apply_report.snapshot_digest 必须匹配 sha256:<64 lowercase hex>。"
+            )
+
+        merge_report_path = self.reports_dir / "merge_report.json"
+        if not merge_report_path.exists():
+            self.errors.append(f"merge_report.json 不存在：{merge_report_path}")
+            return
+        merge_report = self._read_json(merge_report_path)
+        if not isinstance(merge_report, dict):
+            return
+        if merge_report.get("status") != "success":
+            self.errors.append("merge_report.status 必须为 success。")
+        if merge_report.get("task_id") != self.task_id:
+            self.errors.append("merge_report.task_id 与当前 task_id 不一致。")
+
+        merge_digest = merge_report.get("snapshot_digest")
+        if not isinstance(merge_digest, str) or not SNAPSHOT_DIGEST_PATTERN.fullmatch(merge_digest):
+            self.errors.append(
+                "merge_report.snapshot_digest 必须匹配 sha256:<64 lowercase hex>。"
+            )
+            return
+
+        merged_dir = self.root / ".superlooper" / "merged" / self.task_id
+        if not merged_dir.is_dir():
+            self.errors.append(f"merged tree 不存在：{merged_dir}")
+            return
+        try:
+            actual_digest = compute_tree_digest(merged_dir)
+        except OSError as exc:
+            self.errors.append(f"merged tree snapshot_digest 计算失败：{exc}")
+            return
+        if merge_digest != actual_digest:
+            self.errors.append(
+                "merge_report.snapshot_digest 与 merged tree 不一致："
+                f"expected={merge_digest}, actual={actual_digest}"
+            )
+        if isinstance(apply_digest, str) and apply_digest != merge_digest:
+            self.errors.append(
+                "apply_report.snapshot_digest 与 merge_report.snapshot_digest 不一致。"
+            )
+
+    def validate_initialization_advice(self, required=False):
+        advice_path = (
+            self.root
+            / ".superlooper"
+            / "context"
+            / self.task_id
+            / "design"
+            / "initialization-advice.md"
+        )
+        if not advice_path.exists():
+            if required:
+                self.errors.append(f"initialization-advice.md 不存在：{advice_path}")
+            return None
+        data = self._read_first_yaml_block(advice_path)
+        if not isinstance(data, dict):
+            return None
+        label = "initialization_advice"
+        for field in (
+            "task_id",
+            "project_category",
+            "project_version",
+            "project_root",
+        ):
+            self._require_string(data, field, label)
+        if data.get("task_id") != self.task_id:
+            self.errors.append(f"{label}.task_id 与当前 task_id 不一致。")
+        category = data.get("project_category")
+        if category not in INTERACTION_INITIALIZATION_OPTIONS:
+            self.errors.append(f"{label}.project_category 不合法。")
+        version = data.get("project_version")
+        if (
+            category in INTERACTION_INITIALIZATION_OPTIONS
+            and version not in INTERACTION_INITIALIZATION_OPTIONS[category]
+        ):
+            self.errors.append(f"{label}.project_version 不属于对应分类。")
+        project_root = data.get("project_root")
+        if (
+            isinstance(project_root, str)
+            and project_root
+            and project_root != "."
+            and not self._safe_relative_path(project_root, allow_protected=False)
+        ):
+            self.errors.append(f"{label}.project_root 必须是安全相对路径。")
+        return data
+
     def validate_initialization_report(self, required=False):
         report_path = self.reports_dir / "initialization_report.json"
         if not report_path.exists():
@@ -1370,8 +1769,8 @@ class ContractValidator:
         report = self._read_json(report_path)
         if not isinstance(report, dict):
             return None
-        if report.get("session_id") != self.session_id:
-            self.errors.append("initialization_report.session_id 与当前 session_id 不一致。")
+        if report.get("task_id") != self.task_id:
+            self.errors.append("initialization_report.task_id 与当前 task_id 不一致。")
         if report.get("status") != "success":
             self.errors.append("initialization_report.status 必须为 success。")
         category = report.get("project_category")
@@ -1402,12 +1801,12 @@ class ContractValidator:
         status = data.get("requirement_alignment_status")
         if status not in ("PASS", "FAIL"):
             self.errors.append("requirement_alignment_status 必须为 PASS 或 FAIL。")
-        if data.get("session_id") != self.session_id:
-            self.errors.append("requirement_alignment_report.session_id 与当前 session_id 不一致。")
-        expected_prd = f".superlooper/context/{self.session_id}/prd.md"
-        expected_test = f".superlooper/reports/{self.session_id}/test_report.md"
-        expected_apply = f".superlooper/reports/{self.session_id}/apply_report.json"
-        expected_report = f".superlooper/reports/{self.session_id}/requirement_alignment_report.md"
+        if data.get("task_id") != self.task_id:
+            self.errors.append("requirement_alignment_report.task_id 与当前 task_id 不一致。")
+        expected_prd = f".superlooper/context/{self.task_id}/prd.md"
+        expected_test = f".superlooper/reports/{self.task_id}/test_report.md"
+        expected_apply = f".superlooper/reports/{self.task_id}/apply_report.json"
+        expected_report = f".superlooper/reports/{self.task_id}/requirement_alignment_report.md"
         expected_paths = {
             "prd_path": expected_prd,
             "test_report_path": expected_test,
@@ -1424,6 +1823,13 @@ class ContractValidator:
             self.errors.append("requirement_alignment_report PASS 时 unmet_requirement_count 必须为 0。")
         if status == "PASS" and unchecked != 0:
             self.errors.append("requirement_alignment_report PASS 时 unchecked_acceptance_count 必须为 0。")
+        if status == "PASS":
+            evidence = self._read_first_json_block(
+                report_path,
+                "requirement_alignment_report",
+            )
+            if isinstance(evidence, dict):
+                self._validate_requirement_alignment_evidence(evidence)
         self._validate_ui_acceptance_refs_in_report_body(
             "requirement_alignment_report",
             report_path,
@@ -1460,8 +1866,8 @@ class ContractValidator:
         status = data.get("execution_summary_status")
         if status not in EXECUTION_SUMMARY_STATUSES:
             self.errors.append(f"{label}.execution_summary_status 不合法：{status}")
-        if data.get("session_id") != self.session_id:
-            self.errors.append(f"{label}.session_id 与当前 session_id 不一致。")
+        if data.get("task_id") != self.task_id:
+            self.errors.append(f"{label}.task_id 与当前 task_id 不一致。")
         workflow_mode = data.get("workflow_mode")
         if workflow_mode not in WORKFLOW_MODES:
             self.errors.append(f"{label}.workflow_mode 必须为 standard 或 strict_review。")
@@ -1487,7 +1893,7 @@ class ContractValidator:
             self.errors.append(f"{label}.upstream_alignment_status 必须为 PASS、FAIL 或 BLOCKED。")
         self._yaml_bool(data, "module_split_validated", label)
         self._yaml_bool(data, "execution_manifest_validated", label)
-        expected_report = f".superlooper/reports/{self.session_id}/execution_summary.md"
+        expected_report = f".superlooper/reports/{self.task_id}/execution_summary.md"
         value = data.get("report_path")
         if not isinstance(value, str) or self._normalize_context_path(value) != self._normalize_context_path(expected_report):
             self.errors.append(f"{label}.report_path 必须为 {expected_report}。")
@@ -1509,15 +1915,15 @@ class ContractValidator:
         data = self._read_first_yaml_block(report_path)
         if not isinstance(data, dict):
             return None
-        self._validate_upstream_alignment_data(data, "upstream_alignment", f".superlooper/reports/{self.session_id}/upstream_alignment.md")
+        self._validate_upstream_alignment_data(data, "upstream_alignment", f".superlooper/reports/{self.task_id}/upstream_alignment.md")
         return data
 
     def _validate_upstream_alignment_data(self, data, label, expected_report_path=None):
         status = data.get("upstream_alignment_status")
         if status not in ALIGNMENT_STATUSES:
             self.errors.append(f"{label}.upstream_alignment_status 必须为 PASS、FAIL 或 BLOCKED。")
-        if data.get("session_id") != self.session_id:
-            self.errors.append(f"{label}.session_id 与当前 session_id 不一致。")
+        if data.get("task_id") != self.task_id:
+            self.errors.append(f"{label}.task_id 与当前 task_id 不一致。")
         mismatch_count = self._yaml_int(data, "mismatch_count", label)
         if mismatch_count is not None and mismatch_count < 0:
             self.errors.append(f"{label}.mismatch_count 必须为非负整数。")
@@ -1552,13 +1958,22 @@ class ContractValidator:
         status = data.get("change_impact_status")
         if status not in ("PASS", "FAIL"):
             self.errors.append("change_impact_status 必须为 PASS 或 FAIL。")
-        if data.get("session_id") != self.session_id:
-            self.errors.append("change_impact_report.session_id 与当前 session_id 不一致。")
+        if data.get("task_id") != self.task_id:
+            self.errors.append("change_impact_report.task_id 与当前 task_id 不一致。")
         rollback_target_phase = data.get("rollback_target_phase")
         if rollback_target_phase not in ("prd", "ui_design", "design", "initialization", "run", "requirement_alignment"):
             self.errors.append("change_impact_report.rollback_target_phase 不合法。")
         for field in ("requires_reinitialization", "local_rerun_allowed", "manual_approval_required"):
             self._yaml_bool(data, field, "change_impact_report")
+        if data.get("requires_reinitialization") in (True, "true"):
+            if data.get("local_rerun_allowed") in (True, "true"):
+                self.errors.append(
+                    "change_impact_report.requires_reinitialization=true 时 local_rerun_allowed 必须为 false。"
+                )
+            if rollback_target_phase in ("run", "requirement_alignment"):
+                self.errors.append(
+                    "change_impact_report.requires_reinitialization=true 时 rollback_target_phase 必须回到 prd、design 或 initialization。"
+                )
         affected_artifacts = data.get("affected_artifacts")
         if not isinstance(affected_artifacts, list):
             self.errors.append("change_impact_report.affected_artifacts 必须是数组。")
@@ -1576,14 +1991,37 @@ class ContractValidator:
                     self.errors.append(f"change_impact_report.affected_modules[{index}] 模块 ID 格式不合法：{value}")
                 elif module_ids is not None and value not in module_ids:
                     self.errors.append(f"change_impact_report.affected_modules[{index}] 不存在于 module-split：{value}")
-        expected_report = f".superlooper/reports/{self.session_id}/change_impact_report.md"
+            if data.get("local_rerun_allowed") in (True, "true"):
+                if not affected_modules:
+                    self.errors.append(
+                        "change_impact_report.affected_modules 在 local_rerun_allowed=true 时必须非空。"
+                    )
+                duplicates = sorted(
+                    module_id
+                    for module_id in set(affected_modules)
+                    if affected_modules.count(module_id) > 1
+                )
+                if duplicates:
+                    self.errors.append(
+                        "change_impact_report.affected_modules 包含重复模块："
+                        + ", ".join(duplicates)
+                    )
+                manifest = self.validate_execution_manifest(required=True)
+                manifest_module_ids = set(self._module_ids_from_manifest(manifest))
+                extra = sorted(set(affected_modules) - manifest_module_ids)
+                if extra:
+                    self.errors.append(
+                        "change_impact_report.affected_modules 包含非 Execution Manifest 模块："
+                        + ", ".join(extra)
+                    )
+        expected_report = f".superlooper/reports/{self.task_id}/change_impact_report.md"
         value = data.get("report_path")
         if not isinstance(value, str) or self._normalize_context_path(value) != self._normalize_context_path(expected_report):
             self.errors.append(f"change_impact_report.report_path 必须为 {expected_report}。")
         return data
 
     def validate_ui_artifacts(self, required=False):
-        ui_dir = self.root / ".superlooper" / "context" / self.session_id / "ui"
+        ui_dir = self.root / ".superlooper" / "context" / self.task_id / "ui"
         if not ui_dir.exists():
             if required:
                 self.errors.append(f"UI 产物目录不存在：{ui_dir}")
@@ -1599,8 +2037,8 @@ class ContractValidator:
                 for field in UI_SPEC_REQUIRED_FIELDS:
                     if field not in data:
                         self.errors.append(f"ui-spec 缺少状态字段：{field}")
-                if data.get("session_id") != self.session_id:
-                    self.errors.append("ui-spec.session_id 与当前 session_id 不一致。")
+                if data.get("task_id") != self.task_id:
+                    self.errors.append("ui-spec.task_id 与当前 task_id 不一致。")
                 ui_status = data.get("ui_status")
                 if ui_status not in UI_STATUSES:
                     self.errors.append(f"ui-spec.ui_status 不合法：{ui_status}")
@@ -1611,9 +2049,9 @@ class ContractValidator:
                     state = self._read_json(self.state_path)
                     if isinstance(state, dict) and isinstance(project_mode, str) and project_mode != state.get("project_mode"):
                         self.errors.append("ui-spec.project_mode 必须与 session state.project_mode 一致。")
-                expected_prd = f".superlooper/context/{self.session_id}/prd.md"
-                expected_ui_dir = f".superlooper/context/{self.session_id}/ui/"
-                expected_preview = f".superlooper/context/{self.session_id}/ui/preview.html"
+                expected_prd = f".superlooper/context/{self.task_id}/prd.md"
+                expected_ui_dir = f".superlooper/context/{self.task_id}/ui/"
+                expected_preview = f".superlooper/context/{self.task_id}/ui/preview.html"
                 expected_paths = {
                     "prd_path": expected_prd,
                     "ui_output_dir": expected_ui_dir,
@@ -1655,8 +2093,8 @@ class ContractValidator:
         if not isinstance(dag_state, dict):
             self.errors.append("dag-state 顶层必须是 object。")
             return None
-        if dag_state.get("session_id") != self.session_id:
-            self.errors.append("dag-state.session_id 与当前 session_id 不一致。")
+        if dag_state.get("task_id") != self.task_id:
+            self.errors.append("dag-state.task_id 与当前 task_id 不一致。")
         if dag_state.get("dag_status") not in {"pending", "running", "success", "failed"}:
             self.errors.append(f"dag-state.dag_status 不合法：{dag_state.get('dag_status')}")
         nodes = dag_state.get("nodes")
@@ -1693,14 +2131,14 @@ class ContractValidator:
         events = self._read_event_log(self.event_log_path)
         if not isinstance(state, dict) or events is None:
             return
-        if state.get("session_id") != self.session_id:
-            self.errors.append("observability state.session_id 与当前 session_id 不一致。")
+        if state.get("task_id") != self.task_id:
+            self.errors.append("observability state.task_id 与当前 task_id 不一致。")
         last_event = events[-1] if events else None
         if not isinstance(last_event, dict):
             self.errors.append("observability event log 至少需要一条 object 事件。")
             return
-        if last_event.get("session_id") != self.session_id:
-            self.errors.append("observability event.session_id 与当前 session_id 不一致。")
+        if last_event.get("task_id") != self.task_id:
+            self.errors.append("observability event.task_id 与当前 task_id 不一致。")
         state_status = (state.get("current_phase"), state.get("phase_status"))
         event_status = (last_event.get("current_phase"), last_event.get("phase_status"))
         if state_status != event_status:
@@ -1799,12 +2237,156 @@ class ContractValidator:
         except SchemaValidationError as exc:
             self.errors.append(str(exc))
 
+    def _normalize_identity(self, data, label):
+        try:
+            return normalize_legacy_identity(data, label)
+        except SessionStateValidationError as exc:
+            self.errors.append(str(exc))
+            return None
+
     def _read_json(self, path):
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             self.errors.append(f"JSON 解析失败：{path}: {exc}")
             return None
+        if isinstance(data, dict):
+            return self._normalize_identity(data, str(path))
+        return data
+
+    def _read_first_json_block(self, path, label):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            self.errors.append(f"报告读取失败：{path}: {exc}")
+            return None
+        in_json = False
+        block = []
+        for line in lines:
+            stripped = line.strip()
+            if not in_json and stripped == "```json":
+                in_json = True
+                continue
+            if in_json and stripped == "```":
+                try:
+                    data = json.loads("\n".join(block))
+                except json.JSONDecodeError as exc:
+                    self.errors.append(f"{label} JSON 证据块解析失败：{exc}")
+                    return None
+                if not isinstance(data, dict):
+                    self.errors.append(f"{label} JSON 证据块顶层必须是 object。")
+                    return None
+                return data
+            if in_json:
+                block.append(line)
+        if in_json:
+            self.errors.append(f"{label} JSON 证据块未正常结束。")
+        else:
+            self.errors.append(f"{label} 缺少首个 JSON 证据块。")
+        return None
+
+    def _prd_traceability_ids(self):
+        prd_path = self.root / ".superlooper" / "context" / self.task_id / "prd.md"
+        if not prd_path.exists():
+            self.errors.append(f"PRD 不存在：{prd_path}")
+            return set()
+        try:
+            content = prd_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            self.errors.append(f"PRD 读取失败：{prd_path}: {exc}")
+            return set()
+        requirement_ids = set(PRD_TRACEABILITY_PATTERN.findall(content))
+        if not requirement_ids:
+            self.errors.append("PRD 未包含 REQ-*、AC-*、DEC-* 或 OPEN-* 编号。")
+        return requirement_ids
+
+    def _validate_requirement_coverage_ids(self, coverage, label):
+        if not isinstance(coverage, list) or not coverage:
+            self.errors.append(f"{label} 必须是非空数组。")
+            return []
+        ids = []
+        seen = set()
+        duplicates = set()
+        for index, item in enumerate(coverage):
+            item_label = f"{label}[{index}]"
+            if not isinstance(item, dict):
+                self.errors.append(f"{item_label} 必须是 object。")
+                continue
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not PRD_TRACEABILITY_PATTERN.fullmatch(item_id):
+                self.errors.append(f"{item_label}.id 必须是合法的 REQ-*、AC-*、DEC-* 或 OPEN-* 编号。")
+                continue
+            if item_id in seen:
+                duplicates.add(item_id)
+            seen.add(item_id)
+            ids.append((item_id, item, item_label))
+        if duplicates:
+            self.errors.append(f"{label} 包含重复编号：{', '.join(sorted(duplicates))}。")
+        expected_ids = self._prd_traceability_ids()
+        actual_ids = {item_id for item_id, _, _ in ids}
+        missing = sorted(expected_ids - actual_ids)
+        unknown = sorted(actual_ids - expected_ids)
+        if missing:
+            self.errors.append(f"{label} 缺少 PRD 编号：{', '.join(missing)}。")
+        if unknown:
+            self.errors.append(f"{label} 包含 PRD 未定义编号：{', '.join(unknown)}。")
+        return ids
+
+    def _validate_test_evidence(self, evidence):
+        label = "test_report"
+        commands = evidence.get("commands")
+        if not isinstance(commands, list) or not commands:
+            self.errors.append(f"{label}.commands 必须是非空数组。")
+        else:
+            for index, command in enumerate(commands):
+                item_label = f"{label}.commands[{index}]"
+                if not isinstance(command, dict):
+                    self.errors.append(f"{item_label} 必须是 object。")
+                    continue
+                if not isinstance(command.get("command"), str) or not command.get("command").strip():
+                    self.errors.append(f"{item_label}.command 必须是非空字符串。")
+                exit_code = command.get("exit_code")
+                if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+                    self.errors.append(f"{item_label}.exit_code 必须是整数。")
+                elif exit_code != 0:
+                    self.errors.append(f"{item_label}.exit_code 必须为 0。")
+                if command.get("result") != "PASS":
+                    self.errors.append(f"{item_label}.result 必须为 PASS。")
+                if not isinstance(command.get("key_output"), str) or not command.get("key_output").strip():
+                    self.errors.append(f"{item_label}.key_output 必须是非空字符串。")
+        coverage = self._validate_requirement_coverage_ids(
+            evidence.get("requirement_coverage"),
+            f"{label}.requirement_coverage",
+        )
+        for _, item, item_label in coverage:
+            if item.get("status") != "PASS":
+                self.errors.append(f"{item_label}.status 必须为 PASS。")
+            if not isinstance(item.get("evidence"), str) or not item.get("evidence").strip():
+                self.errors.append(f"{item_label}.evidence 必须是非空字符串。")
+
+    def _validate_requirement_alignment_evidence(self, evidence):
+        label = "requirement_alignment_report"
+        coverage = self._validate_requirement_coverage_ids(
+            evidence.get("requirement_coverage"),
+            f"{label}.requirement_coverage",
+        )
+        for item_id, item, item_label in coverage:
+            if item.get("type") != item_id.split("-", 1)[0]:
+                self.errors.append(f"{item_label}.type 必须与编号前缀一致。")
+            if item.get("status") != "PASS":
+                self.errors.append(f"{item_label}.status 必须为 PASS。")
+            for field in (
+                "implementation_evidence",
+                "test_evidence",
+                "delivery_evidence",
+            ):
+                values = item.get(field)
+                if (
+                    not isinstance(values, list)
+                    or not values
+                    or any(not isinstance(value, str) or not value.strip() for value in values)
+                ):
+                    self.errors.append(f"{item_label}.{field} 必须是非空字符串数组。")
 
     def _read_first_yaml_block(self, path):
         try:
@@ -1853,7 +2435,7 @@ class ContractValidator:
         if not result:
             self.errors.append(f"报告 yaml 状态块为空或不可解析：{path}")
             return None
-        return result
+        return self._normalize_identity(result, str(path))
 
     def _yaml_bool(self, data, field, label):
         value = data.get(field)
@@ -1880,46 +2462,56 @@ class ContractValidator:
         if not isinstance(data.get(field), list):
             self.errors.append(f"{label}.{field} 必须是数组。")
 
-    def _validate_session_id(self):
-        if not self.session_id or not SESSION_PATTERN.match(self.session_id):
-            self.errors.append("session_id 只能包含字母、数字、下划线、短横线和点。")
+    def _validate_task_id(self):
+        if not self.task_id or not TASK_ID_PATTERN.match(self.task_id):
+            self.errors.append("task_id 只能包含字母、数字、下划线、短横线和点。")
+
+    def _resolve_artifact_path(self, path, root, label, strict=True):
+        try:
+            resolved_root = Path(root).resolve(strict=True)
+            resolved = Path(path).resolve(strict=strict)
+        except OSError as exc:
+            self.errors.append(f"{label} 真实路径解析失败：{path}: {exc}")
+            return None
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError:
+            self.errors.append(
+                f"{label} 不在授权目录内：{path} -> {resolved}"
+            )
+            return None
+        return resolved
 
     def _safe_relative_path(self, value, allow_protected=False):
-        if not isinstance(value, str) or not value or ":" in value:
-            return False
-        path = Path(value)
-        normalized_parts = [part for part in path.parts if part not in ("", ".")]
-        if not normalized_parts:
-            return False
-        if not allow_protected and normalized_parts[0] in PROTECTED_ROOTS:
-            return False
-        return not path.is_absolute() and not path.drive and ".." not in path.parts
+        return is_safe_relative_path(
+            value,
+            protected_roots=(set() if allow_protected else PROTECTED_ROOTS),
+        )
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Validate SUPERLOOPER orchestration contracts.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
-    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), required=False, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     parser.add_argument("--agents-dir", default=os.getenv("SUPERLOOPER_AGENTS_DIR"), help="插件静态 agent 目录，默认 <plugin-root>/agents。")
     parser.add_argument("--plugin-root", default=os.getenv("SUPERLOOPER_PLUGIN_ROOT"), help="插件源码或安装根目录，默认使用当前脚本所在插件根。")
-    parser.add_argument("--runtime-agents-dir", default=os.getenv("SUPERLOOPER_RUNTIME_AGENTS_DIR"), help="动态 agent 运行时源目录，默认 <workspace-root>/.superlooper/agents/<session_id>。")
-    parser.add_argument("--registered-agents-dir", default=os.getenv("SUPERLOOPER_REGISTERED_AGENTS_DIR"), help="动态 agent 注册入口目录，默认 <workspace-root>/.claude/agents/generated/superlooper/<session_id>。")
+    parser.add_argument("--runtime-agents-dir", default=os.getenv("SUPERLOOPER_RUNTIME_AGENTS_DIR"), help="动态 agent 运行时源目录，默认 <workspace-root>/.superlooper/agents/<task_id>。")
+    parser.add_argument("--registered-agents-dir", default=os.getenv("SUPERLOOPER_REGISTERED_AGENTS_DIR"), help="动态 agent 注册入口目录，默认 <workspace-root>/.claude/agents/generated/superlooper/<task_id>。")
     parser.add_argument("--module-split", default=os.getenv("SUPERLOOPER_MODULE_SPLIT"), help="module-split.json 路径。")
     parser.add_argument("--execution-manifest", default=os.getenv("SUPERLOOPER_MANIFEST_PATH"), help="execution_manifest.json 路径。")
     parser.add_argument("--outputs-root", default=os.getenv("SUPERLOOPER_OUTPUTS_DIR"), help="模块产物根目录，默认 <workspace-root>/.superlooper/outputs。")
-    parser.add_argument("--scope", choices=["interaction-flow", "ui-artifacts", "module-split", "execution", "artifacts", "code-review-report", "test-report", "apply-report", "initialization-report", "requirement-alignment-report", "execution-summary", "upstream-alignment", "change-impact-report", "dag-state", "observability", "reports", "all"], default="all", help="校验范围。")
+    parser.add_argument("--scope", choices=["interaction-flow", "ui-artifacts", "module-split", "execution", "artifacts", "code-review-report", "test-report", "apply-report", "initialization-advice", "initialization-report", "requirement-alignment-report", "execution-summary", "upstream-alignment", "change-impact-report", "dag-state", "observability", "reports", "all"], default="all", help="校验范围。")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    if not args.session_id:
-        print("校验失败：必须提供 --session-id 或 SUPERLOOPER_SESSION_ID。", file=sys.stderr)
-        return 1
     try:
+        task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
         validator = ContractValidator(
             workspace_root=args.workspace_root,
-            session_id=args.session_id,
+            task_id=task_id,
             agents_dir=args.agents_dir,
             runtime_agents_dir=args.runtime_agents_dir,
             registered_agents_dir=args.registered_agents_dir,
@@ -1929,10 +2521,10 @@ def main():
             plugin_root=args.plugin_root,
         )
         validator.validate(args.scope)
-    except ContractError as exc:
+    except (ContractError, SessionStateValidationError) as exc:
         print(f"校验失败：\n{exc}", file=sys.stderr)
         return 1
-    print(f"SUPERLOOPER 契约校验通过：scope={args.scope}, session_id={args.session_id}")
+    print(f"SUPERLOOPER 契约校验通过：scope={args.scope}, task_id={task_id}")
     return 0
 
 

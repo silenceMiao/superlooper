@@ -145,7 +145,7 @@ P0 需求至少需要一个 `EVIDENCE_HIGH` 来源；只有 `EVIDENCE_MEDIUM` �
 
 - 存在外部阻塞 `DEC-*` 时，只输出关键决策看板，不写正式 PRD。
 - 不存在外部阻塞 `DEC-*` 且满足需求阶段完成定义时，写入正式 PRD 并输出 `READY_FOR_DESIGN`。
-- 写入正式 PRD 后，必须输出 `.superlooper/reports/<session_id>/upstream_alignment.md`，对照原始需求完成 PRD 保真自校对。
+- 写入正式 PRD 后，必须输出 `.superlooper/reports/<task_id>/upstream_alignment.md`，对照原始需求完成 PRD 保真自校对。
 - 任一质量扫描组不通过时，不得把流程二标记为可进入设计；必须按问题性质回流到 `ASM-*`、`OPEN-*`、降级处理或关键决策看板。
 
 ## 6. PRD 映射规则

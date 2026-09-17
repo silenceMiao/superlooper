@@ -26,6 +26,8 @@ INSTALL_ONLY_BLOCKED_PATH_PREFIXES = [
 ]
 BLOCKED_EXACT_PATHS = {
     ".env",
+    "20260916.md",
+    "20260917.md",
 }
 BLOCKED_PATH_COMPONENTS = {".superlooper", ".claude", "__pycache__"}
 INSTALL_RUNTIME_REQUIRED_FILES = frozenset(
@@ -79,6 +81,7 @@ INSTALL_RUNTIME_REQUIRED_FILES = frozenset(
         "scripts/doctor.py",
         "scripts/generate_execution_manifest.py",
         "scripts/generate_runtime_agents.py",
+        "scripts/render_codex_spawn_prompt.py",
         "scripts/initialize_project_structure.py",
         "scripts/merge_artifacts.py",
         "scripts/normalize_user_intent.py",
@@ -87,6 +90,7 @@ INSTALL_RUNTIME_REQUIRED_FILES = frozenset(
         "scripts/resume_session.py",
         "scripts/run_execution_dag.py",
         "scripts/schema_validation.py",
+        "scripts/snapshot_digest.py",
         "scripts/status_session.py",
         "scripts/update_session.py",
         "scripts/validate_miao_contracts.py",
@@ -167,6 +171,7 @@ REQUIRED_RELEASE_FILES = {
     "docs/agent-flows/ui-architect-flow.md",
     "scripts/build_execution_summary.py",
     "scripts/normalize_user_intent.py",
+    "scripts/snapshot_digest.py",
     "scripts/doctor.py",
     "bin/spl",
 }

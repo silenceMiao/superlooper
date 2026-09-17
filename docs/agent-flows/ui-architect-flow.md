@@ -644,7 +644,7 @@ page-map.md
 interaction-flow.md
 ui-handoff.md
 preview.html
-.superlooper/reports/<session_id>/upstream_alignment.md
+.superlooper/reports/<task_id>/upstream_alignment.md
 design-tokens.json
 component-inventory.md
 ```

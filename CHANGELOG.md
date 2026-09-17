@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- 强化人工审核 fail-closed 语义、canonical task state、strict review 状态链、BLOCKED 执行摘要恢复与受控局部重跑授权。
+- 为代码审查、测试报告、需求反向校对、Manifest 和模块产物增加完整、唯一且机器可读的证据门禁。
+- merge 使用空 staging 重建完整快照并记录确定性 `snapshot_digest`；apply 在写入前复验快照，并将工作区验证、成功报告发布和回滚纳入同一事务边界。
+- Claude Code 动态 Agent 使用 task-scoped 注册名并在新会话恢复；Codex 通过共享 Manifest 和 runtime Agent renderer 调度 logical Agent。
+- 修复安装态静态合并与应用 Agent 的插件脚本路径，并统一 Claude Code 动态 Agent 恢复命令 namespace。
+
 ## 1.1.1
 
 - Codex 运行链只从共享 `execution_manifest.json` 读取节点、依赖与 payload；不再生成或消费 `codex-dispatch.json`。

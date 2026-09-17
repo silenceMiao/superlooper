@@ -84,6 +84,21 @@ class DoctorScriptTest(unittest.TestCase):
         self.assertIn("codex_plugin: PASS", result.stdout)
         self.assertNotIn("plugin_validate: ", result.stdout)
 
+    def test_claude_doctor_command_probes_runtime_before_diagnostics(self):
+        command_path = self.repo_root / "commands" / "spl" / "doctor.md"
+        content = command_path.read_text(encoding="utf-8")
+
+        self.assertIn("python --version", content)
+        self.assertIn("sys.version_info >= (3, 9)", content)
+        self.assertIn("Python 3.9+", content)
+        self.assertIn("Doctor 未启动：runtime prerequisite unavailable", content)
+        self.assertLess(content.index("python --version"), content.index("sys.version_info >= (3, 9)"))
+        self.assertLess(content.index("sys.version_info >= (3, 9)"), content.index("doctor.py"))
+        self.assertIn("claude plugin validate . --strict", content)
+        self.assertNotIn("--platform codex", content)
+        self.assertNotIn("session 契约", content)
+        self.assertNotIn("session-contract", content)
+
     def test_codex_python_compile_does_not_write_bytecode_to_plugin_root(self):
         sys.path.insert(0, str(self.workspace_root / "scripts"))
         try:
@@ -99,7 +114,7 @@ class DoctorScriptTest(unittest.TestCase):
         self.assertEqual("PASS", status)
         self.assertIn("compiled", message)
 
-    def test_doctor_skips_session_contract_without_session_id(self):
+    def test_doctor_skips_session_contract_without_task_id(self):
         result = self.run_doctor()
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "superlooper",
   "displayName": "Superlooper",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "AI parallel orchestration workflow for Claude Code.",
   "author": {
     "name": "zh-miao",

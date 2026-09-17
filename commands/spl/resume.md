@@ -1,26 +1,27 @@
 ---
-description: 根据 Superlooper session state 恢复到下一步动作。
-argument-hint: "<session_id>"
+description: 根据 Superlooper task state 恢复到下一步动作。
+argument-hint: "<task_id>"
 allowed-tools: Read, Write, Bash, Glob, Grep, Agent
 ---
 
 # /superlooper:spl:resume
 
-`/superlooper:spl:resume` 是 session 恢复入口，不创建新 session，不跳过人工审核点。
+`/superlooper:spl:resume` 是 task 恢复入口，不创建新 task，不跳过人工审核点。
 
 用户参数：`$ARGUMENTS`
 
 执行规则：
 
-1. 解析 `session_id`。
-2. 调用 `python scripts/resume_session.py --workspace-root <workspace_root> --session-id <session_id>` 获取下一步建议；当用户提供自然语言反馈时，追加 `--user-input <text>` 先做意图归一化。
+1. 解析 `task_id`。
+2. 调用 `python "${CLAUDE_PLUGIN_ROOT}/scripts/resume_session.py" --workspace-root <workspace_root> --task-id <task_id>` 获取下一步建议；当用户提供自然语言反馈时，把原始文本按当前 shell 的安全引用规则作为单个 argv 数据传入 `--user-input <原始用户输入>`，不得拼接为 shell 源码。意图归一化和审核状态转换都由该脚本的共享 reducer 完成；但 `READY_FOR_APPROVAL` 下的“按此执行”必须先完成第 6 条 Agent 类型发现检查，检查通过前不得调用带 `--user-input` 的 reducer。
 3. `resume_session.py` 必须先按 `schemas/session-state.schema.json` 校验 state 的字段和枚举；校验失败时直接报错。
 4. 当传入 `--user-input` 时，脚本必须写入 `last_user_input_text`、`last_user_canonical_action`、`pending_user_choice` 和 event log；明确反馈类动作必须写入对应 feedback report。
-5. 当 state 显示 `waiting_review` 时，只输出待用户确认的动作，不自动跳过审核。
-6. 当 state 显示 `run/running` 时，输出“等待执行完成或检查报告”，不重复触发执行链路。
-7. 当 state 显示 `running` 且存在 `upstream_alignment.md` 为 `FAIL` 或 `BLOCKED` 时，`resume_session.py` 必须按 `loop_policy.max_auto_loop_per_phase` 更新 `loop_state`，未达上限时写入 `upstream_alignment_feedback.md` 并回到 `loop_target_phase`，达到上限或 `BLOCKED` 时阻断并等待人工处理。
-8. 当 state 显示 `failed` 或 `blocked` 时，输出失败原因和恢复建议。
-9. 当 state 显示可继续执行时，按 `skills/superlooper/SKILL.md` 对应阶段继续，不得提示重新运行 `/spl <requirement_path>` 创建新 session。
+5. 当 state 显示 `waiting_review` 时，只输出待用户确认的动作，不自动跳过审核。若为 `run/waiting_review + execution_summary_status=BLOCKED`，唯一 canonical 恢复动作是“重试执行摘要”：前置校验失败继续保持 `run/waiting_review + BLOCKED`，全部通过后才回到 `run/pending + NOT_STARTED`；不得以批准、执行、继续或状态查询恢复。
+6. 当 state 显示 `run/waiting_review + execution_summary_status=READY_FOR_APPROVAL` 且用户提交“按此执行”时，Claude adapter 必须在调用 `resume_session.py --user-input` 前确认当前实际 Claude Code 会话的 Agent 工具可用类型列表包含当前 task 全部 registered scoped frontmatter names。任一缺失时不得调用 reducer，state 保持不变，唯一恢复提示为“启动新 Claude Code 会话，执行 `/superlooper:spl:resume <task_id>`，再次提交‘按此执行’。”。
+7. 当 state 显示 `run/running` 时，输出“等待执行完成或检查报告”，不重复触发执行链路。
+8. 当 state 显示 `running` 且存在 `upstream_alignment.md` 为 `FAIL` 或 `BLOCKED` 时，`resume_session.py` 必须按 `loop_policy.max_auto_loop_per_phase` 更新 `loop_state`，未达上限时写入 `upstream_alignment_feedback.md` 并回到 `loop_target_phase`，达到上限或 `BLOCKED` 时阻断并等待人工处理。
+9. 当 state 显示 `failed` 或 `blocked` 时，输出失败原因和恢复建议。
+10. 当 state 显示可继续执行时，按 `skills/superlooper/SKILL.md` 对应阶段继续，不得提示重新运行 `/spl <requirement_path>` 创建新 task。
 
 禁止事项：
 

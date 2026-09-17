@@ -5,7 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from create_session import resolve_workspace_root, validate_session_id
+from create_session import (
+    SessionStateValidationError,
+    normalize_legacy_identity,
+    resolve_explicit_task_id,
+    resolve_workspace_root,
+)
 
 
 class DagRunError(Exception):
@@ -15,19 +20,20 @@ class DagRunError(Exception):
 def parse_args():
     parser = argparse.ArgumentParser(description="Run SUPERLOOPER execution manifest DAG state runner.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
-def manifest_path(workspace_root, session_id):
-    return workspace_root / ".superlooper" / "manifests" / session_id / "execution_manifest.json"
+def manifest_path(workspace_root, task_id):
+    return workspace_root / ".superlooper" / "manifests" / task_id / "execution_manifest.json"
 
 
-def dag_state_path(workspace_root, session_id):
-    return workspace_root / ".superlooper" / "state" / f"{session_id}.dag.json"
+def dag_state_path(workspace_root, task_id):
+    return workspace_root / ".superlooper" / "state" / f"{task_id}.dag.json"
 
 
-def load_manifest(path, session_id):
+def load_manifest(path, task_id):
     if not path.exists():
         raise DagRunError(f"execution_manifest.json 不存在：{path}")
     try:
@@ -36,8 +42,12 @@ def load_manifest(path, session_id):
         raise DagRunError(f"execution_manifest.json 解析失败：{exc}") from exc
     if not isinstance(manifest, dict):
         raise DagRunError("execution_manifest.json 顶层必须是 object。")
-    if manifest.get("session_id") != session_id:
-        raise DagRunError("execution_manifest.json session_id 与当前 session_id 不一致。")
+    try:
+        manifest = normalize_legacy_identity(manifest, "execution_manifest.json")
+    except SessionStateValidationError as exc:
+        raise DagRunError(str(exc)) from exc
+    if manifest.get("task_id") != task_id:
+        raise DagRunError("execution_manifest.json task_id 与当前 task_id 不一致。")
     dag = manifest.get("dag")
     if not isinstance(dag, dict):
         raise DagRunError("execution_manifest.json.dag 必须是 object。")
@@ -86,20 +96,20 @@ def sort_nodes(nodes):
     return node_map, ordered
 
 
-def build_state(session_id, manifest, node_map, ordered, status, error_summary=""):
+def build_state(task_id, manifest, node_map, ordered, status, error_summary=""):
     return {
-        "session_id": session_id,
+        "task_id": task_id,
         "dag_status": status,
         "current_node": ordered[-1] if ordered else None,
         "execution_order": ordered,
         "error_summary": error_summary,
-        "manifest_path": f".superlooper/manifests/{session_id}/execution_manifest.json",
+        "manifest_path": f".superlooper/manifests/{task_id}/execution_manifest.json",
         "nodes": {
             node_id: {
                 "status": "success" if status == "success" and node_id in ordered else "pending",
                 "agent": node_map[node_id].get("agent"),
                 "depends_on": node_map[node_id].get("depends_on", []),
-                "artifact_manifest": artifact_manifest_path(session_id, node_id),
+                "artifact_manifest": artifact_manifest_path(task_id, node_id),
                 "error_summary": "",
             }
             for node_id in node_map
@@ -107,11 +117,11 @@ def build_state(session_id, manifest, node_map, ordered, status, error_summary="
     }
 
 
-def artifact_manifest_path(session_id, node_id):
+def artifact_manifest_path(task_id, node_id):
     if not node_id.startswith("mod_"):
         return ""
     module_id = node_id.removeprefix("mod_")
-    return f".superlooper/outputs/{session_id}/{module_id}/artifact_manifest.json"
+    return f".superlooper/outputs/{task_id}/{module_id}/artifact_manifest.json"
 
 
 def write_dag_state(path, state):
@@ -119,14 +129,14 @@ def write_dag_state(path, state):
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def record_script_event(workspace_root, session_id, status):
+def record_script_event(workspace_root, task_id, status):
     command = [
         sys.executable,
         str(Path(__file__).resolve().parent / "update_session.py"),
         "--workspace-root",
         str(workspace_root),
-        "--session-id",
-        session_id,
+        "--task-id",
+        task_id,
         "--current-phase",
         "run",
         "--phase-status",
@@ -134,17 +144,17 @@ def record_script_event(workspace_root, session_id, status):
         "--last-command",
         "run_execution_dag",
         "--record-script-event",
-        f"run_execution_dag:{status}:{session_id}:{status}",
+        f"run_execution_dag:{status}:{task_id}:{status}",
     ]
     completed = subprocess.run(command, text=True, capture_output=True, encoding="utf-8", errors="replace", check=False)
     if completed.returncode != 0:
         raise DagRunError(completed.stderr or completed.stdout or "记录 script event 失败。")
 
 
-def run(workspace_root, session_id):
-    path = manifest_path(workspace_root, session_id)
+def run(workspace_root, task_id):
+    path = manifest_path(workspace_root, task_id)
     try:
-        manifest = load_manifest(path, session_id)
+        manifest = load_manifest(path, task_id)
         node_map, ordered = sort_nodes(manifest["dag"]["nodes"])
     except DagRunError as exc:
         nodes = []
@@ -155,25 +165,25 @@ def run(workspace_root, session_id):
             except json.JSONDecodeError:
                 nodes = []
         node_map = {node.get("id", f"invalid_{index}"): node for index, node in enumerate(nodes) if isinstance(node, dict)}
-        state = build_state(session_id, {}, node_map, [], "failed", str(exc))
-        write_dag_state(dag_state_path(workspace_root, session_id), state)
-        record_script_event(workspace_root, session_id, "failed")
+        state = build_state(task_id, {}, node_map, [], "failed", str(exc))
+        write_dag_state(dag_state_path(workspace_root, task_id), state)
+        record_script_event(workspace_root, task_id, "failed")
         raise
-    state = build_state(session_id, manifest, node_map, ordered, "success")
-    write_dag_state(dag_state_path(workspace_root, session_id), state)
-    record_script_event(workspace_root, session_id, "completed")
+    state = build_state(task_id, manifest, node_map, ordered, "success")
+    write_dag_state(dag_state_path(workspace_root, task_id), state)
+    record_script_event(workspace_root, task_id, "completed")
     return state
 
 
 def main():
     args = parse_args()
     try:
-        session_id = validate_session_id(args.session_id)
+        task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
         workspace_root = resolve_workspace_root(args.workspace_root)
-        run(workspace_root, session_id)
-        print(dag_state_path(workspace_root, session_id))
+        run(workspace_root, task_id)
+        print(dag_state_path(workspace_root, task_id))
         return 0
-    except DagRunError as exc:
+    except (DagRunError, SessionStateValidationError) as exc:
         print(f"执行 DAG 失败：{exc}", file=sys.stderr)
         return 1
 

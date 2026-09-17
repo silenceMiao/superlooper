@@ -178,6 +178,7 @@
         "开始并行开发",
         "按此执行",
         "执行摘要未通过，返回修正",
+        "重试执行摘要",
         "需求变更，执行影响分析",
         "影响分析通过，执行局部重跑",
         "影响分析不通过，人工处理",
@@ -199,6 +200,12 @@
           "canonical_reply": "执行摘要未通过，返回修正",
           "aliases": ["执行摘要未通过", "摘要不通过", "摘要不对", "执行风险不接受"],
           "requires_feedback": true
+        },
+        {
+          "name": "retry_execution_summary",
+          "canonical_reply": "重试执行摘要",
+          "aliases": ["重试执行摘要", "重新生成执行摘要", "阻断已修复，重试执行摘要", "阻断已修复，重新生成摘要"],
+          "requires_feedback": false
         },
         {
           "name": "start_execution",

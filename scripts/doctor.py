@@ -79,10 +79,10 @@ class DoctorError(Exception):
 
 
 class DoctorRunner:
-    def __init__(self, workspace_root, session_id=None, plugin_root=None, platform="claude"):
+    def __init__(self, workspace_root, task_id=None, plugin_root=None, platform="claude"):
         self.workspace_root = Path(workspace_root).resolve()
         self.plugin_root = Path(plugin_root).resolve() if plugin_root else Path(__file__).resolve().parents[1]
-        self.session_id = session_id
+        self.task_id = task_id
         self.platform = platform
         self.packager = PluginPackager(root=self.plugin_root, mode="install")
         self.results = []
@@ -256,22 +256,22 @@ class DoctorRunner:
         return "PASS", "install release filter keeps runtime closure, excludes blocked paths, and scans secrets"
 
     def check_session_contract(self):
-        if not self.session_id:
-            return "SKIPPED", "session_id not provided"
+        if not self.task_id:
+            return "SKIPPED", "task_id not provided"
         command = [
             sys.executable,
             str(self.plugin_root / "scripts" / "validate_miao_contracts.py"),
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--scope",
             "all",
         ]
         completed = self._run_command(command)
         if completed.returncode != 0:
             return "FAIL", completed.stderr or completed.stdout or "session contract validation failed"
-        return "PASS", f"validated session {self.session_id}"
+        return "PASS", f"validated task {self.task_id}"
 
     def _run_command(self, command):
         return subprocess.run(
@@ -297,7 +297,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Run SUPERLOOPER doctor checks.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
     parser.add_argument("--plugin-root", default=os.getenv("SUPERLOOPER_PLUGIN_ROOT"), help="插件源码或安装根目录，默认使用当前脚本所在插件根。")
-    parser.add_argument("--session-id", help="执行会话 ID。")
+    parser.add_argument("--task-id", help="执行任务 ID。")
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude", help="运行 doctor 的平台。")
     return parser.parse_args(argv)
 
@@ -307,7 +307,7 @@ def main(argv=None):
     try:
         runner = DoctorRunner(
             workspace_root=args.workspace_root,
-            session_id=args.session_id,
+            task_id=args.task_id,
             plugin_root=args.plugin_root,
             platform=args.platform,
         )

@@ -8,9 +8,9 @@ from pathlib import Path
 from create_session import (
     SessionStateValidationError,
     load_state_from_path,
+    resolve_explicit_task_id,
     resolve_workspace_root,
     state_file_path,
-    validate_session_id,
     validate_session_state,
     write_state,
 )
@@ -29,7 +29,8 @@ EVENT_SECRET_PATTERNS = [
 def parse_args():
     parser = argparse.ArgumentParser(description="Update SUPERLOOPER session state.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     parser.add_argument("--current-phase", required=True, help="当前阶段。")
     parser.add_argument("--phase-status", required=True, help="阶段状态。")
     parser.add_argument("--last-command", required=True, help="最近执行命令。")
@@ -60,6 +61,9 @@ def parse_args():
     parser.add_argument("--change-request-count", type=int)
     parser.add_argument("--active-feedback-report")
     parser.add_argument("--change-impact-report")
+    affected_modules_group = parser.add_mutually_exclusive_group()
+    affected_modules_group.add_argument("--affected-module", action="append", default=[])
+    affected_modules_group.add_argument("--clear-affected-modules", action="store_true")
     parser.add_argument("--invalidated-artifact", action="append", default=[])
     parser.add_argument("--rollback-target-phase", choices=["prd", "ui_design", "design", "initialization", "run", "requirement_alignment"])
     parser.add_argument("--last-user-input-text")
@@ -117,6 +121,28 @@ def merge_script_events(existing_events, raw_events):
         seen.add(idempotency_key)
         events.append({"script": script, "status": status, "idempotency_key": idempotency_key})
     return events
+
+
+def validate_protected_transition(state, updated):
+    if state.get("phase_status") == "waiting_review" and (
+        updated.get("current_phase") != state.get("current_phase")
+        or updated.get("phase_status") != "waiting_review"
+    ):
+        raise SessionUpdateError("waiting_review 审核状态只能通过 resume_session.py 推进。")
+    if (
+        updated.get("current_phase") == "report"
+        and updated.get("phase_status") == "passed"
+        and (state.get("current_phase"), state.get("phase_status")) != ("report", "passed")
+    ):
+        raise SessionUpdateError("report/passed 只能通过 resume_session.py 构造。")
+    protected_approvals = (
+        ("ui_status", "APPROVED"),
+        ("execution_summary_status", "APPROVED"),
+        ("requirement_alignment_passed", True),
+    )
+    for field, approved_value in protected_approvals:
+        if updated.get(field) == approved_value and state.get(field) != approved_value:
+            raise SessionUpdateError(f"{field} 审核终态只能通过 resume_session.py 构造。")
 
 
 def apply_updates(state, args):
@@ -185,6 +211,10 @@ def apply_updates(state, args):
         updated["active_feedback_report"] = args.active_feedback_report
     if args.change_impact_report is not None:
         updated["change_impact_report"] = args.change_impact_report
+    if args.affected_module:
+        raise SessionUpdateError("affected_modules 非空授权范围只能通过 resume_session.py 写入。")
+    if args.clear_affected_modules:
+        updated["affected_modules"] = []
     if args.invalidated_artifact:
         updated["invalidated_artifacts"] = merge_unique(state.get("invalidated_artifacts", []), args.invalidated_artifact)
     if args.rollback_target_phase is not None:
@@ -201,11 +231,12 @@ def apply_updates(state, args):
         if pending_user_choice is not None and not isinstance(pending_user_choice, dict):
             raise SessionUpdateError("pending_user_choice 必须为 object 或 null。")
         updated["pending_user_choice"] = pending_user_choice
+    validate_protected_transition(state, updated)
     return validate_session_state(updated)
 
 
-def event_log_path(workspace_root, session_id):
-    return Path(workspace_root) / ".superlooper" / "events" / f"{session_id}.jsonl"
+def event_log_path(workspace_root, task_id):
+    return Path(workspace_root) / ".superlooper" / "events" / f"{task_id}.jsonl"
 
 
 def redact_event_string(value):
@@ -223,7 +254,7 @@ def redact_event_strings(values):
 
 def build_event_record(state):
     return {
-        "session_id": state["session_id"],
+        "task_id": state["task_id"],
         "current_phase": state["current_phase"],
         "phase_status": state["phase_status"],
         "last_command": redact_event_string(state.get("last_command")),
@@ -243,6 +274,7 @@ def build_event_record(state):
         "ui_artifacts_validated": state.get("ui_artifacts_validated"),
         "active_feedback_report": redact_event_string(state.get("active_feedback_report")),
         "change_impact_report": redact_event_string(state.get("change_impact_report")),
+        "affected_modules": redact_event_strings(state.get("affected_modules", [])),
         "invalidated_artifacts": redact_event_strings(state.get("invalidated_artifacts", [])),
         "rollback_target_phase": state.get("rollback_target_phase"),
         "last_user_input_text": redact_event_string(state.get("last_user_input_text")),
@@ -252,7 +284,7 @@ def build_event_record(state):
 
 
 def append_event_log(workspace_root, state):
-    path = event_log_path(workspace_root, state["session_id"])
+    path = event_log_path(workspace_root, state["task_id"])
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(build_event_record(state), ensure_ascii=False) + "\n")
@@ -261,9 +293,9 @@ def append_event_log(workspace_root, state):
 def main():
     args = parse_args()
     try:
-        session_id = validate_session_id(args.session_id)
+        task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
         workspace_root = resolve_workspace_root(args.workspace_root)
-        path = state_file_path(workspace_root, session_id)
+        path = state_file_path(workspace_root, task_id)
         state = load_state_from_path(path)
         if state.get("workspace_root") != str(workspace_root):
             raise SessionUpdateError("state.workspace_root 与传入 workspace_root 不一致，拒绝覆盖。")

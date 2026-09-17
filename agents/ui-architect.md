@@ -27,9 +27,9 @@ activation: explicit_only
 
 | 字段 | 说明 |
 | --- | --- |
-| `session_id` | 当前编排会话 ID |
-| `prd_path` | 已审核 PRD 路径，默认 `.superlooper/context/<session_id>/prd.md` |
-| `ui_output_dir` | UI 设计输出目录，默认 `.superlooper/context/<session_id>/ui/` |
+| `task_id` | 当前任务唯一 ID |
+| `prd_path` | 已审核 PRD 路径，默认 `.superlooper/context/<task_id>/prd.md` |
+| `ui_output_dir` | UI 设计输出目录，默认 `.superlooper/context/<task_id>/ui/` |
 | `workspace_root` | 目标项目根目录，仅用于确认输出边界和 brownfield 可选扫描，不作为新项目 UI 默认设计依据 |
 | `project_mode` | 项目模式，默认 `greenfield`；可选值为 `greenfield`、`brownfield` |
 | `existing_frontend` | 是否存在并允许读取已有前端事实，默认 `false` |
@@ -128,11 +128,11 @@ brownfield 扫描只能用于识别兼容约束、复用组件、路由习惯和
 第一个代码块必须是 YAML 状态块：
 
 ```yaml
-session_id: <session_id>
+task_id: <task_id>
 ui_status: READY_FOR_REVIEW
-prd_path: .superlooper/context/<session_id>/prd.md
-ui_output_dir: .superlooper/context/<session_id>/ui/
-preview_path: .superlooper/context/<session_id>/ui/preview.html
+prd_path: .superlooper/context/<task_id>/prd.md
+ui_output_dir: .superlooper/context/<task_id>/ui/
+preview_path: .superlooper/context/<task_id>/ui/preview.html
 project_mode: greenfield | brownfield
 existing_frontend: true | false
 page_count: <number>
@@ -142,7 +142,7 @@ unresolved_ui_decision_count: <number>
 
 `ui_status` 合法值为 `READY_FOR_REVIEW`、`CHANGES_REQUESTED`、`APPROVED`、`BLOCKED`、`FAILED`。`ui-architect` 正常生成待审核产物时输出 `READY_FOR_REVIEW`；`APPROVED` 只能由主调度器在用户审核通过且 `ui-artifacts` 校验通过后写入 session state。
 
-`ui-architect` 必须额外输出 `.superlooper/reports/<session_id>/upstream_alignment.md`，对照已审核 PRD 校验 UI 页面、交互、状态、文案和 preview 覆盖。第一个 YAML 状态块必须包含 `session_id`、`upstream_alignment_status`、`mismatch_count`、`loop_required`、`loop_target_phase: ui_design`、`blocking_decisions` 和 `report_path`。
+`ui-architect` 必须额外输出 `.superlooper/reports/<task_id>/upstream_alignment.md`，对照已审核 PRD 校验 UI 页面、交互、状态、文案和 preview 覆盖。第一个 YAML 状态块必须包含 `task_id`、`upstream_alignment_status`、`mismatch_count`、`loop_required`、`loop_target_phase: ui_design`、`blocking_decisions` 和 `report_path`。
 
 `ui-spec.md` 必须包含：
 
@@ -306,7 +306,7 @@ UI 设计不得向后续阶段提供：
 - 不调用外部网站抓取 UI 参考。
 - 不在 `greenfield` 路径下读取已有前端结构、组件库、样式体系或路由习惯。
 - 不读取原始需求文档，除非主会话明确要求补充核对。
-- 所有输出路径必须来自 payload 或 `.superlooper/context/<session_id>/ui/` 默认约定。
+- 所有输出路径必须来自 payload 或 `.superlooper/context/<task_id>/ui/` 默认约定。
 
 # 执行过程报告要求
 

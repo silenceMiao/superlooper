@@ -10,8 +10,8 @@ class UpstreamAlignmentContractTest(unittest.TestCase):
         self.repo_root = Path(__file__).resolve().parents[1]
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace_root = Path(self.temp_dir.name)
-        self.session_id = "session_alignment"
-        self.reports_dir = self.workspace_root / ".superlooper" / "reports" / self.session_id
+        self.task_id = "session_alignment"
+        self.reports_dir = self.workspace_root / ".superlooper" / "reports" / self.task_id
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
@@ -24,8 +24,8 @@ class UpstreamAlignmentContractTest(unittest.TestCase):
                 str(self.repo_root / "scripts" / "validate_miao_contracts.py"),
                 "--workspace-root",
                 str(self.workspace_root),
-                "--session-id",
-                self.session_id,
+                "--task-id",
+                self.task_id,
                 "--scope",
                 "upstream-alignment",
             ],
@@ -47,7 +47,7 @@ class UpstreamAlignmentContractTest(unittest.TestCase):
         decisions = blocking_decisions or []
         lines = [
             "```yaml",
-            f"session_id: {self.session_id}",
+            f"task_id: {self.task_id}",
             f"upstream_alignment_status: {status}",
             f"mismatch_count: {mismatch_count}",
             f"loop_required: {loop_required}",
@@ -58,7 +58,7 @@ class UpstreamAlignmentContractTest(unittest.TestCase):
         else:
             lines.append("blocking_decisions:")
             lines.extend(f"  - {item}" for item in decisions)
-        lines.append(f"report_path: .superlooper/reports/{self.session_id}/upstream_alignment.md")
+        lines.append(f"report_path: .superlooper/reports/{self.task_id}/upstream_alignment.md")
         lines.append("```")
         (self.reports_dir / "upstream_alignment.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

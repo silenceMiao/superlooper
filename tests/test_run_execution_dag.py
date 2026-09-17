@@ -11,11 +11,11 @@ class RunExecutionDagTest(unittest.TestCase):
         self.repo_root = Path(__file__).resolve().parents[1]
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace_root = Path(self.temp_dir.name)
-        self.session_id = "dag-session"
+        self.task_id = "dag-session"
         self.requirement_path = self.workspace_root / "requirements.md"
         self.requirement_path.write_text("# demo\n", encoding="utf-8")
         self.create_session()
-        self.manifest_dir = self.workspace_root / ".superlooper" / "manifests" / self.session_id
+        self.manifest_dir = self.workspace_root / ".superlooper" / "manifests" / self.task_id
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
@@ -36,8 +36,8 @@ class RunExecutionDagTest(unittest.TestCase):
             "create_session.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
             "--requirement-path",
             str(self.requirement_path),
         )
@@ -45,7 +45,7 @@ class RunExecutionDagTest(unittest.TestCase):
 
     def write_execution_manifest(self, nodes):
         manifest = {
-            "session_id": self.session_id,
+            "task_id": self.task_id,
             "dag": {"nodes": nodes},
         }
         (self.manifest_dir / "execution_manifest.json").write_text(
@@ -54,11 +54,11 @@ class RunExecutionDagTest(unittest.TestCase):
         )
 
     def read_dag_state(self):
-        path = self.workspace_root / ".superlooper" / "state" / f"{self.session_id}.dag.json"
+        path = self.workspace_root / ".superlooper" / "state" / f"{self.task_id}.dag.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def read_session_state(self):
-        path = self.workspace_root / ".superlooper" / "state" / f"{self.session_id}.json"
+        path = self.workspace_root / ".superlooper" / "state" / f"{self.task_id}.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def test_run_execution_dag_writes_success_state_in_dependency_order(self):
@@ -73,13 +73,13 @@ class RunExecutionDagTest(unittest.TestCase):
             "run_execution_dag.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         dag_state = self.read_dag_state()
-        self.assertEqual(dag_state["session_id"], self.session_id)
+        self.assertEqual(dag_state["task_id"], self.task_id)
         self.assertEqual(dag_state["dag_status"], "success")
         self.assertEqual(dag_state["execution_order"], ["mod_a", "task_code_review"])
         self.assertEqual(dag_state["nodes"]["mod_a"]["status"], "success")
@@ -99,8 +99,8 @@ class RunExecutionDagTest(unittest.TestCase):
             "run_execution_dag.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
         )
 
         self.assertNotEqual(result.returncode, 0)
@@ -120,14 +120,62 @@ class RunExecutionDagTest(unittest.TestCase):
             "run_execution_dag.py",
             "--workspace-root",
             str(self.workspace_root),
-            "--session-id",
-            self.session_id,
+            "--task-id",
+            self.task_id,
         )
 
         self.assertNotEqual(result.returncode, 0)
         dag_state = self.read_dag_state()
         self.assertEqual(dag_state["dag_status"], "failed")
         self.assertIn("循环依赖", dag_state["error_summary"])
+
+    def test_run_execution_dag_accepts_legacy_manifest_without_rewriting(self):
+        self.write_execution_manifest(
+            [
+                {"id": "mod_a", "agent": "module_a", "depends_on": [], "payload": {"module_id": "a"}},
+            ]
+        )
+        manifest_path = self.manifest_dir / "execution_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["session_id"] = manifest.pop("task_id")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        result = self.run_script(
+            "run_execution_dag.py",
+            "--workspace-root",
+            str(self.workspace_root),
+            "--session-id",
+            self.task_id,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dag_state = self.read_dag_state()
+        self.assertEqual(dag_state["task_id"], self.task_id)
+        persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["session_id"], self.task_id)
+        self.assertNotIn("task_id", persisted)
+
+    def test_run_execution_dag_rejects_dual_manifest_identity(self):
+        self.write_execution_manifest(
+            [
+                {"id": "mod_a", "agent": "module_a", "depends_on": [], "payload": {"module_id": "a"}},
+            ]
+        )
+        manifest_path = self.manifest_dir / "execution_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["session_id"] = self.task_id
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        result = self.run_script(
+            "run_execution_dag.py",
+            "--workspace-root",
+            str(self.workspace_root),
+            "--task-id",
+            self.task_id,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("不能同时包含 task_id 和 legacy session_id", result.stderr)
 
 
 if __name__ == "__main__":

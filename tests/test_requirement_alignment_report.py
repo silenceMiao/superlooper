@@ -7,7 +7,7 @@ class RequirementAlignmentReportContractTest(unittest.TestCase):
         content = textwrap.dedent(
             """
             ```yaml
-            session_id: alignment-session
+            task_id: alignment-session
             requirement_alignment_status: PASS
             unmet_requirement_count: 0
             unchecked_acceptance_count: 0

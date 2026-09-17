@@ -6,6 +6,14 @@
 
 Superlooper 是公开发布的 Claude Code 与 Codex 双平台插件源码，不是具体业务项目。当前根目录必须保持为可通过 `claude plugin validate . --strict` 的 Claude Code plugin 根目录，并同时包含可被 Codex 读取的 `.codex-plugin/plugin.json`。
 
+Python 是 Superlooper workflow 的 `workflow runtime dependency`，不是 Claude Code 或 Codex 插件安装标准。最低运行版本为 Python 3.9；当前源码使用 `str.removeprefix()` 与 `list[str]`。源码、package、compile 和 unit 验收在声明了 Python 版本的受控开发或 CI 环境执行，不以任意开发宿主或未来用户会话的 Python 状态判定源码成功或失败。
+
+两个总入口和两个 Doctor 入口在当前实际 Agent 会话依次运行 `python --version` 与 `python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)"`。总入口不可用时无副作用停止；Doctor 不可用时记录 `Doctor 未启动：runtime prerequisite unavailable`。插件不自动安装 Python，不修改 PATH、sandbox、权限或系统配置。
+
+平台 E2E 缺少 Python、Claude Code 或 Codex 时记录 `NOT_RUN_ENVIRONMENT_PREREQUISITE`，不判定源码或发布物失败，也不计为 PASS。双平台兼容声明仍要求 Claude Code 与 Codex 各自在满足依赖的受控环境有 PASS 证据。
+
+Codex Doctor 与 status 属于 read-only 操作；完整 workflow、dispatcher、PRD、UI、design、run 和 resume 才要求 non-ephemeral、`workspace-write` parent session。
+
 ## 开发前必读文件
 
 历史上曾使用开发辅助入口 `/superlooper:superlooper-dev <本轮开发需求>` 触发同类上下文加载；当前开发源码时不再把它视为插件安装后的公开入口。Claude Code 在本地源码目录工作时，必须先读取以下文件：
@@ -33,8 +41,19 @@ scripts/initialize_project_structure.py
 - JSON Schema 契约固定在 `schemas/`。
 - 后续增强设计文档固定在 `docs/design/`；设计文档是源码开发、审计和后续扩展参考，已实施状态以文档中的“当前已实施范围”和 README/CHANGELOG/backlog 标注为准。
 - 运行时产物目录为目标项目中的 `.superlooper/`，不得作为插件源码发布内容。
-- Claude Code 动态 agent 注册入口为目标项目中的 `.claude/agents/generated/superlooper/<session_id>/`，不得作为插件静态源码目录。
-- Codex 不创建 Claude 注册目录；其 Manifest `context.platform_registration` 固定为 `{ "platform": "codex" }`，并在目标项目的 `.superlooper/agents/<session_id>/` 生成 `module_<module_id>.md` 运行时 agent。`execution_manifest.json` 是唯一 DAG 事实源，Codex dispatcher 不得成为第二套业务协议。
+- Claude Code 动态 agent 注册入口为目标项目中的 `.claude/agents/generated/superlooper/<task_id>/`，不得作为插件静态源码目录。
+- Codex 不创建 Claude 注册目录；其 Manifest `context.platform_registration` 固定为 `{ "platform": "codex" }`，并在目标项目的 `.superlooper/agents/<task_id>/` 生成 `module_<module_id>.md` 运行时 agent。`execution_manifest.json` 是唯一 DAG 事实源，Codex dispatcher 不得成为第二套业务协议。
+
+## P0 运行契约
+
+- 人工审核输入采用 fail-closed：阶段特定 revision 优先，否定和暂停优先于批准关键词；`resume_session.py::apply_user_input()` 是审核终态的唯一 reducer，`update_session.py` 只能记录合法 checkpoint。`BLOCKED` execution summary 只能由明确 `retry_execution_summary` 恢复：失败保持 `run/waiting_review + BLOCKED`，成功前置校验后回 `run/pending + NOT_STARTED`。
+- `strict_review` 的设计批准进入 `initialization/waiting_review` 分类和版本选择；初始化及 module-split 校验后回 `design/waiting_review`，用户继续后才进入 `run/pending`。`standard` 只保留 PRD、UI、执行摘要和最终需求反向校对四个人工审核点。
+- 影响分析记录阶段不得通过 `update_session.py` 写入非空 `affected_modules`；只有用户批准局部重跑后，`resume_session.py` reducer 才能从已校验报告写入授权范围。
+- `code_review_report.md` 的 FAIL 是合法返工状态，但 apply 必须显式要求 PASS；PASS 的 `reviewed_modules` 必须非空、无重复且完全覆盖当前 Manifest 模块集合。PASS `test_report.md` 与 PASS `requirement_alignment_report.md` 在首个 YAML 状态块后必须包含首个 JSON 证据块，并覆盖 PRD 中全部 `REQ-*`、`AC-*`、`DEC-*`、`OPEN-*`。
+- `task_code_review`、`task_merge`、`task_integration_test`、`task_apply_to_workspace` 的 Manifest payload 固定为 object；Schema 约束字段边界，`ContractValidator` 约束当前 task identity、标准路径和默认 overwrite 禁止字段。merge 在空 staging 计算 snapshot digest 并事务式发布；apply 写入前重新校验 digest，并对 create/overwrite、工作区验证与成功报告发布执行事务回滚。
+- Claude 正式静态 Agent 调用使用 `superlooper:<agent-name>`。动态 runtime logical Agent 和 Manifest 继续使用 `module_<module_id>`；Claude registered frontmatter name 使用 `module_<module_id>__task_<sha256(task_id)[:16]>`。处理“按此执行”前，Claude adapter 必须确认当前会话 Agent 可用类型包含全部 registered scoped names；任一缺失不得调用 reducer，state 保持 READY_FOR_APPROVAL，只提示启动新 Claude Code 会话、执行 `/superlooper:spl:resume <task_id>` 并再次提交“按此执行”。
+- Codex 不执行 Claude Agent 类型发现；每个 eligible `mod_*` 节点先调用 `scripts/render_codex_spawn_prompt.py`，再把完整 stdout 原样传给 `spawn_agent(..., fork_turns="none", message=<renderer stdout>)`。renderer 只读取已校验 Manifest、当前 runtime Agent、当前 module 和允许的设计路径，不保存状态或生成第二 DAG。
+- `initialization-advice.md` 的第一个 YAML 块固定包含 `task_id`、`project_category`、`project_version`、`project_root`。Claude/Codex adapter 必须先执行 `--scope initialization-advice`，再把三个初始化值作为独立 argv 原样传给 `initialize_project_structure.py`；不得从 `project-profile.md` 或自然语言猜测。
 
 ## 禁止事项
 
@@ -70,14 +89,14 @@ scripts/initialize_project_structure.py
 | UI traceability 契约 | `agents/architect.md`、`docs/agent-flows/architect-flow.md`、`agents/developer.md`、`agents/tester.md`、`agents/requirement-verifier.md`、`schemas/module-split.schema.json`、`scripts/generate_execution_manifest.py`、`scripts/generate_runtime_agents.py`、`scripts/validate_miao_contracts.py`、`README.md`、`tests/test_generate_execution_manifest.py`、`tests/test_generate_runtime_agents.py`、`tests/test_validate_contracts.py` |
 | `brownfield-selective` 契约 | `schemas/session-state.schema.json`、`scripts/create_session.py`、`scripts/update_session.py`、`schemas/module-split.schema.json`、`scripts/generate_execution_manifest.py`、`scripts/generate_runtime_agents.py`、`scripts/validate_miao_contracts.py`、`agents/architect.md`、`agents/developer.md`、`agents/workspace_applier.md`、`README.md`、`tests/test_session_state.py`、`tests/test_generate_execution_manifest.py`、`tests/test_generate_runtime_agents.py`、`tests/test_validate_contracts.py`、`tests/test_apply_to_workspace.py` |
 | `scripts/validate_miao_contracts.py` | `README.md` 常用命令、`schemas/` |
-| 项目初始化门禁 | `skills/superlooper/SKILL.md`、`commands/spl/design.md`、`commands/spl/run.md`、`schemas/session-state.schema.json`、`scripts/initialize_project_structure.py`、`scripts/generate_execution_manifest.py`、`tests/test_initialize_project_structure.py`、`tests/test_generate_execution_manifest.py` |
+| 项目初始化门禁 | `agents/architect.md`、`docs/agent-flows/architect-flow.md`、`skills/superlooper/SKILL.md`、`commands/spl/design.md`、`codex/skills/superlooper-design/SKILL.md`、`schemas/session-state.schema.json`、`scripts/validate_miao_contracts.py`、`scripts/initialize_project_structure.py`、`scripts/generate_execution_manifest.py`、`tests/test_validate_contracts.py`、`tests/test_initialize_project_structure.py`、`tests/test_interaction_flow.py`、`tests/test_codex_skills.py`、`tests/test_generate_execution_manifest.py` |
 | PRD 反向需求校对 | `skills/superlooper/SKILL.md`、`commands/spl/run.md`、`agents/requirement-verifier.md`、`scripts/build_session_report.py`、`scripts/validate_miao_contracts.py`、`tests/test_requirement_alignment_report.py`、`tests/test_build_session_report.py` |
 | PRD 回退协议 | `skills/superlooper/SKILL.md`、`commands/spl/prd.md`、`agents/analyst.md`、`configs/interaction-flow.json`、`schemas/session-state.schema.json`、`scripts/update_session.py`、`tests/test_session_state.py` |
 | UI 设计流程 | `skills/superlooper/SKILL.md`、`commands/spl/ui.md`、`agents/ui-architect.md`、`docs/agent-flows/ui-architect-flow.md`、`agents/architect.md`、`docs/agent-flows/architect-flow.md`、`configs/interaction-flow.json`、`schemas/session-state.schema.json`、`scripts/validate_miao_contracts.py`、`tests/test_session_state.py`、`tests/test_validate_contracts.py` |
 | 设计回退协议 | `skills/superlooper/SKILL.md`、`commands/spl/design.md`、`agents/architect.md`、`configs/interaction-flow.json`、`schemas/session-state.schema.json`、`scripts/update_session.py`、`tests/test_session_state.py` |
 | 深层变更影响分析 | `skills/superlooper/SKILL.md`、`commands/spl/run.md`、`agents/impact-analyzer.md`、`scripts/validate_miao_contracts.py`、`scripts/update_session.py`、`scripts/resume_session.py`、`tests/test_validate_contracts.py` |
 | 运行阶段返工协议 | `skills/superlooper/SKILL.md`、`commands/spl/run.md`、`configs/interaction-flow.json`、`scripts/normalize_user_intent.py`、`scripts/resume_session.py`、`scripts/validate_miao_contracts.py`、`tests/test_session_state.py`、`tests/test_interaction_flow.py`、`README.md` |
-| 自然语言归一化与 active session 恢复 | `skills/superlooper/SKILL.md`、`commands/spl.md`、`commands/spl/resume.md`、`configs/interaction-flow.json`、`schemas/session-state.schema.json`、`scripts/normalize_user_intent.py`、`scripts/resume_session.py`、`scripts/update_session.py`、`tests/test_session_state.py`、`README.md` |
+| 自然语言归一化与 active task 恢复 | `skills/superlooper/SKILL.md`、`commands/spl.md`、`commands/spl/resume.md`、`configs/interaction-flow.json`、`schemas/session-state.schema.json`、`scripts/normalize_user_intent.py`、`scripts/resume_session.py`、`scripts/update_session.py`、`tests/test_session_state.py`、`README.md` |
 | `schemas/*.schema.json` | `scripts/validate_miao_contracts.py`、`agents/developer.md` |
 | `scripts/merge_artifacts.py` | `agents/system_merger.md`、`README.md` |
 | `scripts/apply_to_workspace.py` | `agents/workspace_applier.md`、`README.md`、`skills/superlooper/SKILL.md`、`scripts/validate_miao_contracts.py`、`scripts/build_session_report.py`、`tests/test_apply_to_workspace.py`、`tests/test_validate_contracts.py`、`tests/test_build_session_report.py` |

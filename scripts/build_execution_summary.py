@@ -7,9 +7,9 @@ from pathlib import Path
 from create_session import (
     SessionStateValidationError,
     load_state_from_path,
+    resolve_explicit_task_id,
     resolve_workspace_root,
     state_file_path,
-    validate_session_id,
     write_state,
 )
 from update_session import append_event_log
@@ -23,7 +23,8 @@ class ExecutionSummaryError(Exception):
 def parse_args():
     parser = argparse.ArgumentParser(description="Build SUPERLOOPER execution summary for user approval.")
     parser.add_argument("--workspace-root", default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()), help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。")
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     parser.add_argument("--plugin-root", default=os.getenv("SUPERLOOPER_PLUGIN_ROOT"), help="插件源码或安装根目录，默认使用当前脚本所在插件根。")
     return parser.parse_args()
 
@@ -40,8 +41,8 @@ def read_json(path, label):
     return data
 
 
-def validate_contracts(workspace_root, session_id, plugin_root):
-    validator = ContractValidator(workspace_root, session_id, plugin_root=plugin_root)
+def validate_contracts(workspace_root, task_id, plugin_root):
+    validator = ContractValidator(workspace_root, task_id, plugin_root=plugin_root)
     module_split_validated = True
     execution_manifest_validated = True
     upstream_alignment_data = None
@@ -74,9 +75,9 @@ def validate_contracts(workspace_root, session_id, plugin_root):
     return module_split_validated, execution_manifest_validated, upstream_alignment_data, errors
 
 
-def collect_summary_data(workspace_root, session_id):
-    manifests_dir = workspace_root / ".superlooper" / "manifests" / session_id
-    reports_dir = workspace_root / ".superlooper" / "reports" / session_id
+def collect_summary_data(workspace_root, task_id):
+    manifests_dir = workspace_root / ".superlooper" / "manifests" / task_id
+    reports_dir = workspace_root / ".superlooper" / "reports" / task_id
     module_split = read_json(manifests_dir / "module-split.json", "module-split.json")
     execution_manifest = read_json(manifests_dir / "execution_manifest.json", "execution_manifest.json")
     initialization_report = read_json(reports_dir / "initialization_report.json", "initialization_report.json")
@@ -107,8 +108,8 @@ def yaml_list_block(key, values):
     return "\n".join(lines)
 
 
-def build_report(session_id, state, data, module_split_validated, execution_manifest_validated, upstream_alignment_data, validation_errors):
-    report_path = f".superlooper/reports/{session_id}/execution_summary.md"
+def build_report(task_id, state, data, module_split_validated, execution_manifest_validated, upstream_alignment_data, validation_errors):
+    report_path = f".superlooper/reports/{task_id}/execution_summary.md"
     upstream_alignment_status = upstream_alignment_data.get("upstream_alignment_status") if isinstance(upstream_alignment_data, dict) else "BLOCKED"
     blocking_decisions = list(validation_errors)
     if isinstance(upstream_alignment_data, dict) and isinstance(upstream_alignment_data.get("blocking_decisions"), list):
@@ -122,10 +123,17 @@ def build_report(session_id, state, data, module_split_validated, execution_mani
     module_lines = [f"- `{module.get('id')}`：{module.get('name', module.get('description', '未命名模块'))}" for module in modules if isinstance(module, dict)]
     target_lines = [f"- `{path}`" for path in sorted(set(target_files))]
     error_lines = [f"- {error}" for error in validation_errors] or ["- 无"]
+    user_actions = (
+        "- 通过：回复 `按此执行`。\n"
+        "- 不通过：回复 `执行摘要未通过，返回修正：<反馈内容>`。\n"
+        if status == "READY_FOR_APPROVAL"
+        else "- 当前摘要存在阻断项，不得批准执行。\n"
+        "- 修复阻断项后回复 `重试执行摘要`。\n"
+    )
     return (
         "```yaml\n"
         f"execution_summary_status: {status}\n"
-        f"session_id: {session_id}\n"
+        f"task_id: {task_id}\n"
         f"workflow_mode: {state['workflow_mode']}\n"
         f"project_category: {data['initialization_report'].get('project_category')}\n"
         f"project_version: {data['initialization_report'].get('project_version')}\n"
@@ -160,12 +168,11 @@ def build_report(session_id, state, data, module_split_validated, execution_mani
         "- 合并后由 tester 执行集成测试与契约测试。\n"
         "- apply 前保留同路径不同内容文件阻断策略。\n\n"
         "## 用户确认动作\n\n"
-        "- 通过：回复 `按此执行`。\n"
-        "- 不通过：回复 `执行摘要未通过，返回修正：<反馈内容>`。\n"
+        + user_actions
     )
 
 
-def update_state(workspace_root, session_id, state_path, state, report_path, status):
+def update_state(workspace_root, task_id, state_path, state, report_path, status):
     updated = dict(state)
     updated["current_phase"] = "run"
     updated["phase_status"] = "waiting_review"
@@ -184,22 +191,22 @@ def update_state(workspace_root, session_id, state_path, state, report_path, sta
 
 
 def run(args):
-    session_id = validate_session_id(args.session_id)
+    task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
     workspace_root = resolve_workspace_root(args.workspace_root)
-    state_path = state_file_path(workspace_root, session_id)
+    state_path = state_file_path(workspace_root, task_id)
     state = load_state_from_path(state_path)
-    data = collect_summary_data(workspace_root, session_id)
-    module_split_validated, execution_manifest_validated, upstream_alignment_data, validation_errors = validate_contracts(workspace_root, session_id, args.plugin_root)
-    report = build_report(session_id, state, data, module_split_validated, execution_manifest_validated, upstream_alignment_data, validation_errors)
-    report_path = f".superlooper/reports/{session_id}/execution_summary.md"
+    data = collect_summary_data(workspace_root, task_id)
+    module_split_validated, execution_manifest_validated, upstream_alignment_data, validation_errors = validate_contracts(workspace_root, task_id, args.plugin_root)
+    report = build_report(task_id, state, data, module_split_validated, execution_manifest_validated, upstream_alignment_data, validation_errors)
+    report_path = f".superlooper/reports/{task_id}/execution_summary.md"
     absolute_report_path = workspace_root / report_path
     absolute_report_path.parent.mkdir(parents=True, exist_ok=True)
     absolute_report_path.write_text(report, encoding="utf-8")
-    validator = ContractValidator(workspace_root, session_id, plugin_root=args.plugin_root)
+    validator = ContractValidator(workspace_root, task_id, plugin_root=args.plugin_root)
     summary_data = validator.validate_execution_summary(required=True)
     if validator.errors:
         raise ExecutionSummaryError("；".join(validator.errors))
-    update_state(workspace_root, session_id, state_path, state, report_path, summary_data["execution_summary_status"])
+    update_state(workspace_root, task_id, state_path, state, report_path, summary_data["execution_summary_status"])
     print(report_path)
     return 0
 

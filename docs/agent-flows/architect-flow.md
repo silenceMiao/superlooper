@@ -68,7 +68,7 @@ PRD 基线读取
 - `design_output_dir/project-profile.md`
 - `design_output_dir/initialization-advice.md`
 - `payload.module_split_path`，仅在 `project_initialized=true` 后产出
-- `.superlooper/reports/<session_id>/upstream_alignment.md`，用于声明设计和模块拆分是否对齐 PRD/UI 上游基线
+- `.superlooper/reports/<task_id>/upstream_alignment.md`，用于声明设计和模块拆分是否对齐 PRD/UI 上游基线
 
 条件输出物仅在 PRD 或目标项目结构需要时产出，不得为空生成占位文件：
 
@@ -174,7 +174,18 @@ API 设计不得输出业务代码，不得替 `developer` 生成控制器实现
 - 失败补偿或人工介入入口。
 - 与 `AC-*` 的验收映射。
 
-## 9. 模块拆分清单设计
+## 9. 初始化建议与模块拆分清单设计
+
+`design_output_dir/initialization-advice.md` 的第一个 YAML 代码块必须提供主调度器直接消费的扁平参数，不得要求 adapter 从 `project-profile.md` 或自然语言正文猜测：
+
+```yaml
+task_id: <task_id>
+project_category: springboot
+project_version: springboot-3.x
+project_root: .
+```
+
+参数块必须使用当前 `task_id`、固定允许的 category/version 组合，以及 workspace 内安全的相对 `project_root`。初始化风险、选择理由和替代方案写在参数块之后。
 
 项目结构初始化完成前必须先输出初始化建议，不得生成正式 `module-split.json`。项目结构初始化完成后，必须生成机器可读的 `module-split.json`，写入 payload 指定的 `module_split_path`。
 
@@ -186,9 +197,9 @@ API 设计不得输出业务代码，不得替 `developer` 生成控制器实现
 - 禁止使用 `feature_a`、`feature_b`、`module_a`、`module_b` 作为正式模块 ID。
 - 每个模块描述必须足够让 `developer` 只看模块 payload、设计上下文和 Manifest 节点工作。
 - 每个模块如能确定目标文件，必须在 `target_files` 中列出目标后端项目根目录相对路径。
-- 当 `project_profile.project_mode=brownfield-selective` 时，每个模块必须声明 `allowed_existing_files`、`forbidden_files`、`integration_points`、`test_commands` 和 `overwrite_policy`；`allowed_existing_files` 必须是 `target_files` 子集，`forbidden_files` 不得与 `target_files` 重叠，`overwrite_policy` 固定为 `block_by_default`。
-- 不同模块的 `target_files` 不得声明同一路径；若多个模块需要修改同一文件，必须重新调整模块边界，指定唯一归属模块，或将共享改动拆为独立公共支撑模块，不得把冲突留到流程四、并行编码或合并流程处理。
-- 当模块声明 `target_files` 且文件职责可确定时，必须同步声明 `file_roles`，路径必须与 `target_files` 保持一致。
+- 当 `project_profile.project_mode=brownfield-selective` 时，每个模块必须声明 `allowed_existing_files`、`forbidden_files`、`integration_points`、`test_commands` 和 `overwrite_policy`；`allowed_existing_files` 必须按 Windows 等价路径判断为 `target_files` 子集，`forbidden_files` 不得按 Windows 等价路径与 `target_files` 重叠，`overwrite_policy` 固定为 `block_by_default`。
+- 同一模块内及不同模块间的 `target_files` 均不得声明同一 Windows 等价路径；比较时统一 `/` 与 `\\`、忽略大小写，并移除每个路径段末尾的点和空格。若多个模块需要修改同一物理文件，必须重新调整模块边界，指定唯一归属模块，或将共享改动拆为独立公共支撑模块，不得把冲突留到流程四、并行编码或合并流程处理。
+- 当模块声明 `target_files` 且文件职责可确定时，必须同步声明 `file_roles`；`file_roles[].path` 的成员关系、重复检查和对 `target_files` 的覆盖完整性均按同一 Windows 等价路径规则判断。
 - Java 后端项目必须为每个模块声明 `target_files`。
 - 不允许把整份 PRD 或原始需求直接塞入单个模块 payload。
 
@@ -230,7 +241,7 @@ API 设计不得输出业务代码，不得替 `developer` 生成控制器实现
 | 开放问题检查 | `OPEN-*` 已按默认处理方式处理，并保留追溯 |
 | 范围边界检查 | `MUST_NOT` 未进入模块范围、API、DDL 或目标文件 |
 | 文件落点检查 | `target_files` 使用目标后端项目根目录相对路径 |
-| 模块边界冲突检查 | 不同模块的 `target_files` 不存在重复路径 |
+| 模块边界冲突检查 | 同一模块内及不同模块间的 `target_files` 不存在 Windows 等价重复路径；`allowed_existing_files`、`forbidden_files`、`file_roles[].path` 使用同一等价规则 |
 | Java 分层检查 | Java 文件落点符合标准目录 |
 | 可测试性检查 | P0 模块具备 `acceptance_refs` 或 `test_focus` |
 | UI 追溯检查 | 前端相关模块保留 `ui_refs`、`interaction_refs`、`component_refs`、`ui_acceptance_refs` |

@@ -57,6 +57,9 @@ class SchemaValidator:
         minimum = schema.get("minLength")
         if minimum is not None and len(value) < minimum:
             errors.append(f"{path} 长度必须不少于 {minimum}。")
+        maximum = schema.get("maxLength")
+        if maximum is not None and len(value) > maximum:
+            errors.append(f"{path} 长度必须不超过 {maximum}。")
         pattern = schema.get("pattern")
         if pattern is not None:
             try:

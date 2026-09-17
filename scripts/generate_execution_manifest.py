@@ -5,31 +5,23 @@ import re
 import sys
 from pathlib import Path
 
+from create_session import (
+    SessionStateValidationError,
+    is_safe_relative_path,
+    load_state_from_path,
+    resolve_explicit_task_id,
+    windows_path_key,
+)
 
-SESSION_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 MODULE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 PROTECTED_ROOTS = {".superlooper", ".git", ".svn", ".hg"}
 SYSTEM_NODES = [
-    {
-        "id": "task_code_review",
-        "agent": "code-reviewer",
-        "payload": "审查所有并行模块节点代码",
-    },
-    {
-        "id": "task_merge",
-        "agent": "system_merger",
-        "payload": "执行 scripts/merge_artifacts.py 进行冲突消解",
-    },
-    {
-        "id": "task_integration_test",
-        "agent": "tester",
-        "payload": "执行合并后集成测试与契约测试",
-    },
-    {
-        "id": "task_apply_to_workspace",
-        "agent": "workspace_applier",
-        "payload": "将测试通过的合并产物应用到当前目标项目根目录",
-    },
+    {"id": "task_code_review", "agent": "code-reviewer"},
+    {"id": "task_merge", "agent": "system_merger"},
+    {"id": "task_integration_test", "agent": "tester"},
+    {"id": "task_apply_to_workspace", "agent": "workspace_applier"},
 ]
 FORBIDDEN_INPUTS = ["原始需求文档", "其他模块 payload", "其他模块输出目录"]
 FORBIDDEN_OUTPUTS = ["未包含在 target_files 中的文件", "目标项目根目录直接写入"]
@@ -55,17 +47,17 @@ class ManifestGenerationError(Exception):
 
 
 class ExecutionManifestGenerator:
-    def __init__(self, workspace_root, session_id, module_split=None, output=None, platform="claude"):
+    def __init__(self, workspace_root, task_id, module_split=None, output=None, platform="claude"):
         self.root = Path(workspace_root).resolve()
-        self.session_id = self._validate_session_id(session_id)
+        self.task_id = self._validate_task_id(task_id)
         self.platform = platform
         self.module_split_path = self._resolve_scoped_path(
             module_split,
-            self.root / ".superlooper" / "manifests" / self.session_id / "module-split.json",
+            self.root / ".superlooper" / "manifests" / self.task_id / "module-split.json",
         )
         self.output_path = self._resolve_scoped_path(
             output,
-            self.root / ".superlooper" / "manifests" / self.session_id / "execution_manifest.json",
+            self.root / ".superlooper" / "manifests" / self.task_id / "execution_manifest.json",
         )
 
     def run(self):
@@ -92,19 +84,21 @@ class ExecutionManifestGenerator:
             raise ManifestGenerationError(f"路径必须位于 workspace_root 内：{path}") from exc
         return path
 
-    def _validate_session_id(self, session_id):
-        if not session_id or session_id in {".", ".."} or not SESSION_PATTERN.match(session_id):
-            raise ManifestGenerationError("session_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
-        return session_id
+    def _validate_task_id(self, task_id):
+        if not task_id or task_id in {".", ".."} or not TASK_ID_PATTERN.match(task_id):
+            raise ManifestGenerationError("task_id 只能包含字母、数字、下划线、短横线和点，且不能为 . 或 ..。")
+        return task_id
 
     def _load_session_state(self):
-        state_path = self.root / ".superlooper" / "state" / f"{self.session_id}.json"
+        state_path = self.root / ".superlooper" / "state" / f"{self.task_id}.json"
         if not state_path.exists():
             raise ManifestGenerationError(f"session state 不存在：{state_path}")
         try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
+            state = load_state_from_path(state_path)
+        except SessionStateValidationError as exc:
             raise ManifestGenerationError(f"session state 解析失败：{exc}") from exc
+        if state.get("task_id") != self.task_id:
+            raise ManifestGenerationError("session state task_id 与当前 task_id 不一致。")
         if state.get("project_initialized") is not True:
             raise ManifestGenerationError("project_initialized 必须为 true 才能生成 execution_manifest。")
         report_path = state.get("initialization_report")
@@ -123,11 +117,11 @@ class ExecutionManifestGenerator:
             raise ManifestGenerationError("ui_status 必须为 APPROVED 才能生成 execution_manifest。")
         if state.get("ui_artifacts_validated") is not True:
             raise ManifestGenerationError("ui_artifacts_validated 必须为 true 才能生成 execution_manifest。")
-        ui_output_dir = state.get("ui_output_dir") or f".superlooper/context/{self.session_id}/ui/"
-        ui_dir = self._resolve_scoped_path(ui_output_dir, self.root / ".superlooper" / "context" / self.session_id / "ui")
+        ui_output_dir = state.get("ui_output_dir") or f".superlooper/context/{self.task_id}/ui/"
+        ui_dir = self._resolve_scoped_path(ui_output_dir, self.root / ".superlooper" / "context" / self.task_id / "ui")
         for filename in REQUIRED_UI_ARTIFACTS:
             self._require_file(ui_dir / filename, f"UI 固定产物不存在：{filename}")
-        design_dir = self.root / ".superlooper" / "context" / self.session_id / "design"
+        design_dir = self.root / ".superlooper" / "context" / self.task_id / "design"
         for filename in REQUIRED_DESIGN_ARTIFACTS:
             self._require_file(design_dir / filename, f"设计固定产物不存在：{filename}")
 
@@ -170,15 +164,16 @@ class ExecutionManifestGenerator:
             for file_index, target_file in enumerate(target_files):
                 if not self._safe_relative_path(target_file):
                     raise ManifestGenerationError(f"{label}.target_files[{file_index}] 不是安全相对路径：{target_file}")
-                if target_file in module_target_files:
+                target_key = windows_path_key(target_file)
+                if target_key in module_target_files:
                     raise ManifestGenerationError(f"{label}.target_files 存在重复路径：{target_file}")
-                module_target_files.add(target_file)
-                owner = target_file_to_module.get(target_file)
+                module_target_files.add(target_key)
+                owner = target_file_to_module.get(target_key)
                 if owner is not None:
                     raise ManifestGenerationError(
                         f"检测到跨模块重复 target_files：{target_file} 同时属于 {owner} 和 {module_id}"
                     )
-                target_file_to_module[target_file] = module_id
+                target_file_to_module[target_key] = module_id
             collected.append(module)
         return collected
 
@@ -188,25 +183,25 @@ class ExecutionManifestGenerator:
         system_nodes = self._build_system_nodes(module_node_ids)
         nodes.extend(system_nodes)
         context = {
-            "prd_path": f".superlooper/context/{self.session_id}/prd.md",
-            "design_docs_path": f".superlooper/context/{self.session_id}/design/",
-            "module_split_path": f".superlooper/manifests/{self.session_id}/module-split.json",
+            "prd_path": f".superlooper/context/{self.task_id}/prd.md",
+            "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+            "module_split_path": f".superlooper/manifests/{self.task_id}/module-split.json",
             "agents_path": "agents/",
-            "runtime_agents_path": f".superlooper/agents/{self.session_id}/",
+            "runtime_agents_path": f".superlooper/agents/{self.task_id}/",
         }
         if self.platform == "claude":
-            context["registered_agents_path"] = f".claude/agents/generated/superlooper/{self.session_id}/"
+            context["registered_agents_path"] = f".claude/agents/generated/superlooper/{self.task_id}/"
         else:
             context["platform_registration"] = {"platform": "codex"}
         context.update(
             {
-                "outputs_path": f".superlooper/outputs/{self.session_id}/",
-                "merged_path": f".superlooper/merged/{self.session_id}/",
-                "reports_path": f".superlooper/reports/{self.session_id}/",
+                "outputs_path": f".superlooper/outputs/{self.task_id}/",
+                "merged_path": f".superlooper/merged/{self.task_id}/",
+                "reports_path": f".superlooper/reports/{self.task_id}/",
             }
         )
         return {
-            "session_id": self.session_id,
+            "task_id": self.task_id,
             "granularity": "module",
             "context": context,
             "dag": {"nodes": nodes},
@@ -218,15 +213,15 @@ class ExecutionManifestGenerator:
         payload = dict(module)
         payload.update(
             {
-                "session_id": self.session_id,
+                "task_id": self.task_id,
                 "module_id": module_id,
                 "module_payload": module_payload,
-                "design_docs_path": f".superlooper/context/{self.session_id}/design/",
-                "project_profile_path": f".superlooper/context/{self.session_id}/design/project-profile.md",
-                "module_split_path": f".superlooper/manifests/{self.session_id}/module-split.json",
-                "execution_manifest_path": f".superlooper/manifests/{self.session_id}/execution_manifest.json",
-                "output_dir": f".superlooper/outputs/{self.session_id}/{module_id}/",
-                "artifact_manifest_path": f".superlooper/outputs/{self.session_id}/{module_id}/artifact_manifest.json",
+                "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+                "project_profile_path": f".superlooper/context/{self.task_id}/design/project-profile.md",
+                "module_split_path": f".superlooper/manifests/{self.task_id}/module-split.json",
+                "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "output_dir": f".superlooper/outputs/{self.task_id}/{module_id}/",
+                "artifact_manifest_path": f".superlooper/outputs/{self.task_id}/{module_id}/artifact_manifest.json",
                 "target_files": self._as_list(module.get("target_files")),
                 "file_roles": self._as_list(module.get("file_roles")),
                 "requirement_refs": self._as_list(module.get("requirement_refs")),
@@ -258,6 +253,45 @@ class ExecutionManifestGenerator:
         return f"负责 {module['id']} 模块交付，代码必须落到目标项目根目录相对路径。"
 
     def _build_system_nodes(self, module_node_ids):
+        system_payloads = {
+            "task_code_review": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "outputs_path": f".superlooper/outputs/{self.task_id}/",
+                "reports_path": f".superlooper/reports/{self.task_id}/",
+                "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+                "module_split_path": f".superlooper/manifests/{self.task_id}/module-split.json",
+            },
+            "task_merge": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "outputs_dir": ".superlooper/outputs",
+                "merged_dir": f".superlooper/merged/{self.task_id}",
+                "reports_dir": f".superlooper/reports/{self.task_id}",
+                "code_review_report_path": f".superlooper/reports/{self.task_id}/code_review_report.md",
+            },
+            "task_integration_test": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "merged_path": f".superlooper/merged/{self.task_id}/",
+                "reports_path": f".superlooper/reports/{self.task_id}/",
+                "prd_path": f".superlooper/context/{self.task_id}/prd.md",
+                "design_docs_path": f".superlooper/context/{self.task_id}/design/",
+                "execution_manifest_path": f".superlooper/manifests/{self.task_id}/execution_manifest.json",
+                "merge_report_path": f".superlooper/reports/{self.task_id}/merge_report.json",
+                "test_workspace_path": f".superlooper/test_workspace/{self.task_id}/",
+            },
+            "task_apply_to_workspace": {
+                "workspace_root": ".",
+                "task_id": self.task_id,
+                "merged_dir": f".superlooper/merged/{self.task_id}",
+                "reports_dir": f".superlooper/reports/{self.task_id}",
+                "merge_report_path": f".superlooper/reports/{self.task_id}/merge_report.json",
+                "test_report_path": f".superlooper/reports/{self.task_id}/test_report.md",
+            },
+        }
         nodes = []
         for node in SYSTEM_NODES:
             node_id = node["id"]
@@ -275,7 +309,7 @@ class ExecutionManifestGenerator:
                     "id": node_id,
                     "agent": node["agent"],
                     "depends_on": depends_on,
-                    "payload": node["payload"],
+                    "payload": system_payloads[node_id],
                 }
             )
         return nodes
@@ -291,15 +325,10 @@ class ExecutionManifestGenerator:
         return {field: self._as_list(module.get(field)) for field in fields}
 
     def _safe_relative_path(self, value):
-        if not isinstance(value, str) or not value or ":" in value:
-            return False
-        path = Path(value)
-        normalized_parts = [part for part in path.parts if part not in ("", ".")]
-        if not normalized_parts:
-            return False
-        if normalized_parts[0] in PROTECTED_ROOTS:
-            return False
-        return not path.is_absolute() and not path.drive and ".." not in path.parts
+        return is_safe_relative_path(
+            value,
+            protected_roots=PROTECTED_ROOTS,
+        )
 
     def _contract_path(self, path):
         return str(path.relative_to(self.root)).replace("\\", "/")
@@ -312,16 +341,17 @@ def parse_args():
         default=os.getenv("SUPERLOOPER_WORKSPACE_ROOT", os.getcwd()),
         help="目标项目根目录，默认使用 SUPERLOOPER_WORKSPACE_ROOT 或当前目录。",
     )
-    parser.add_argument("--session-id", required=True, help="执行会话 ID。")
+    parser.add_argument("--task-id", default=os.getenv("SUPERLOOPER_TASK_ID"), help="执行任务 ID。")
+    parser.add_argument("--session-id", default=os.getenv("SUPERLOOPER_SESSION_ID"), help=argparse.SUPPRESS)
     parser.add_argument(
         "--module-split",
         default=os.getenv("SUPERLOOPER_MODULE_SPLIT"),
-        help="module-split.json 路径，默认 <workspace-root>/.superlooper/manifests/<session_id>/module-split.json。",
+        help="module-split.json 路径，默认 <workspace-root>/.superlooper/manifests/<task_id>/module-split.json。",
     )
     parser.add_argument(
         "--output",
         default=os.getenv("SUPERLOOPER_MANIFEST_PATH"),
-        help="execution_manifest.json 输出路径，默认 <workspace-root>/.superlooper/manifests/<session_id>/execution_manifest.json。",
+        help="execution_manifest.json 输出路径，默认 <workspace-root>/.superlooper/manifests/<task_id>/execution_manifest.json。",
     )
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude", help="平台注册目标，默认 claude。")
     return parser.parse_args()
@@ -330,15 +360,16 @@ def parse_args():
 def main():
     args = parse_args()
     try:
+        task_id = resolve_explicit_task_id(args.task_id, args.session_id, required=True)
         generator = ExecutionManifestGenerator(
             workspace_root=args.workspace_root,
-            session_id=args.session_id,
+            task_id=task_id,
             module_split=args.module_split,
             output=args.output,
             platform=args.platform,
         )
         return generator.run()
-    except ManifestGenerationError as exc:
+    except (ManifestGenerationError, SessionStateValidationError) as exc:
         print(f"生成 execution_manifest 失败：{exc}", file=sys.stderr)
         return 1
 

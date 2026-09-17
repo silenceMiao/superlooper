@@ -4,9 +4,9 @@
   "title": "SUPERLOOPER Artifact Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["session_id", "module_id", "agent", "status", "produced_files", "verification", "notes"],
+  "required": ["task_id", "module_id", "agent", "status", "produced_files", "verification", "notes"],
   "properties": {
-    "session_id": {
+    "task_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_.-]+$"
     },

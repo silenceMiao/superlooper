@@ -140,6 +140,7 @@ class PackagePluginReleaseBehaviorTest(unittest.TestCase):
             "docs/agent-flows/ui-architect-flow.md",
             "scripts/build_execution_summary.py",
             "scripts/normalize_user_intent.py",
+            "scripts/snapshot_digest.py",
             "scripts/doctor.py",
             "bin/spl",
         }
@@ -186,9 +187,23 @@ class PackagePluginReleaseBehaviorTest(unittest.TestCase):
             "codex/skills/superlooper-status/SKILL.md",
             "codex/skills/superlooper-resume/SKILL.md",
             "codex/skills/superlooper-doctor/SKILL.md",
+            "scripts/render_codex_spawn_prompt.py",
         }
 
         self.assertTrue(required_codex_files.issubset(release_files))
+
+    def test_root_history_documents_are_always_excluded(self):
+        history_documents = {
+            "20260916.md",
+            "20260917.md",
+        }
+        for relative_path in history_documents:
+            (self.root / relative_path).write_text("historical note\n", encoding="utf-8")
+
+        for mode in ("source", "install"):
+            with self.subTest(mode=mode):
+                release_files = set(self._build_packager(mode=mode)._build_release_file_list())
+                self.assertTrue(history_documents.isdisjoint(release_files))
 
     def test_forbidden_paths_are_always_excluded(self):
         forbidden_paths = {
@@ -339,6 +354,7 @@ class InstallArtifactSmokeTest(unittest.TestCase):
             "docs/agent-flows/ui-architect-flow.md",
             "scripts/build_execution_summary.py",
             "scripts/normalize_user_intent.py",
+            "scripts/snapshot_digest.py",
             "scripts/doctor.py",
             "bin/spl",
         }
@@ -360,6 +376,44 @@ class InstallArtifactSmokeTest(unittest.TestCase):
         self.assertEqual(0, smoke.returncode, msg=smoke.stdout + smoke.stderr)
         self.assertIn("plugin_validate: PASS", smoke.stdout)
         self.assertIn("release_filter: PASS", smoke.stdout)
+
+        target_workspace = self.temp_root / "target-workspace"
+        target_workspace.mkdir()
+        self.assertFalse((target_workspace / "scripts").exists())
+
+        status_smoke = subprocess.run(
+            [
+                sys.executable,
+                str(extract_root / "scripts" / "status_session.py"),
+                "--workspace-root",
+                str(target_workspace),
+                "--list-active",
+            ],
+            cwd=target_workspace,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self.assertEqual(0, status_smoke.returncode, msg=status_smoke.stdout + status_smoke.stderr)
+        self.assertIn("active_tasks:", status_smoke.stdout)
+        self.assertIn("- (none)", status_smoke.stdout)
+
+        doctor_smoke = subprocess.run(
+            [
+                sys.executable,
+                str(extract_root / "scripts" / "doctor.py"),
+                "--workspace-root",
+                str(target_workspace),
+            ],
+            cwd=target_workspace,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self.assertEqual(0, doctor_smoke.returncode, msg=doctor_smoke.stdout + doctor_smoke.stderr)
+        self.assertIn("plugin_validate: PASS", doctor_smoke.stdout)
 
 
 class BuildReleaseArchiveTest(unittest.TestCase):

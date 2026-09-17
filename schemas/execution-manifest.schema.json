@@ -4,9 +4,9 @@
   "title": "SUPERLOOPER Execution Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["session_id", "granularity", "context", "dag"],
+  "required": ["task_id", "granularity", "context", "dag"],
   "properties": {
-    "session_id": {
+    "task_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_.-]+$"
     },
@@ -84,6 +84,144 @@
                 "then": {
                   "properties": {
                     "payload": { "type": "object", "minProperties": 1 }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "id": { "const": "task_code_review" }
+                  },
+                  "required": ["id"]
+                },
+                "then": {
+                  "properties": {
+                    "payload": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "workspace_root",
+                        "task_id",
+                        "outputs_path",
+                        "reports_path",
+                        "execution_manifest_path",
+                        "design_docs_path",
+                        "module_split_path"
+                      ],
+                      "properties": {
+                        "workspace_root": { "const": "." },
+                        "task_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+                        "outputs_path": { "type": "string", "minLength": 1 },
+                        "reports_path": { "type": "string", "minLength": 1 },
+                        "execution_manifest_path": { "type": "string", "minLength": 1 },
+                        "design_docs_path": { "type": "string", "minLength": 1 },
+                        "module_split_path": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "id": { "const": "task_merge" }
+                  },
+                  "required": ["id"]
+                },
+                "then": {
+                  "properties": {
+                    "payload": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "workspace_root",
+                        "task_id",
+                        "manifest_path",
+                        "outputs_dir",
+                        "merged_dir",
+                        "reports_dir",
+                        "code_review_report_path"
+                      ],
+                      "properties": {
+                        "workspace_root": { "const": "." },
+                        "task_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+                        "manifest_path": { "type": "string", "minLength": 1 },
+                        "outputs_dir": { "type": "string", "minLength": 1 },
+                        "merged_dir": { "type": "string", "minLength": 1 },
+                        "reports_dir": { "type": "string", "minLength": 1 },
+                        "code_review_report_path": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "id": { "const": "task_integration_test" }
+                  },
+                  "required": ["id"]
+                },
+                "then": {
+                  "properties": {
+                    "payload": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "workspace_root",
+                        "task_id",
+                        "merged_path",
+                        "reports_path",
+                        "prd_path",
+                        "design_docs_path",
+                        "execution_manifest_path",
+                        "merge_report_path",
+                        "test_workspace_path"
+                      ],
+                      "properties": {
+                        "workspace_root": { "const": "." },
+                        "task_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+                        "merged_path": { "type": "string", "minLength": 1 },
+                        "reports_path": { "type": "string", "minLength": 1 },
+                        "prd_path": { "type": "string", "minLength": 1 },
+                        "design_docs_path": { "type": "string", "minLength": 1 },
+                        "execution_manifest_path": { "type": "string", "minLength": 1 },
+                        "merge_report_path": { "type": "string", "minLength": 1 },
+                        "test_workspace_path": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "id": { "const": "task_apply_to_workspace" }
+                  },
+                  "required": ["id"]
+                },
+                "then": {
+                  "properties": {
+                    "payload": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "workspace_root",
+                        "task_id",
+                        "merged_dir",
+                        "reports_dir",
+                        "merge_report_path",
+                        "test_report_path"
+                      ],
+                      "properties": {
+                        "workspace_root": { "const": "." },
+                        "task_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+                        "merged_dir": { "type": "string", "minLength": 1 },
+                        "reports_dir": { "type": "string", "minLength": 1 },
+                        "merge_report_path": { "type": "string", "minLength": 1 },
+                        "test_report_path": { "type": "string", "minLength": 1 }
+                      }
+                    }
                   }
                 }
               }

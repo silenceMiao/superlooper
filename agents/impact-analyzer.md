@@ -23,25 +23,25 @@ tools: Read, Grep, Glob, Write
 
 | 字段 | 说明 |
 | --- | --- |
-| `session_id` | 当前编排会话 ID |
+| `task_id` | 当前任务唯一 ID |
 | `feedback_report` | 用户变更反馈记录路径 |
-| `prd_path` | 当前 PRD 路径，默认 `.superlooper/context/<session_id>/prd.md` |
-| `design_docs_path` | 当前设计文档目录，默认 `.superlooper/context/<session_id>/design/` |
+| `prd_path` | 当前 PRD 路径，默认 `.superlooper/context/<task_id>/prd.md` |
+| `design_docs_path` | 当前设计文档目录，默认 `.superlooper/context/<task_id>/design/` |
 | `module_split_path` | 当前模块拆分清单路径 |
 | `execution_manifest_path` | 当前执行清单路径 |
-| `reports_path` | 当前报告目录，默认 `.superlooper/reports/<session_id>/` |
-| `report_path` | 影响分析报告输出路径，默认 `.superlooper/reports/<session_id>/change_impact_report.md` |
+| `reports_path` | 当前报告目录，默认 `.superlooper/reports/<task_id>/` |
+| `report_path` | 影响分析报告输出路径，默认 `.superlooper/reports/<task_id>/change_impact_report.md` |
 
 # 必须读取的上下文
 
 调用时必须读取：
 
 1. `payload.feedback_report` 指向的用户变更反馈。
-2. `.superlooper/context/<session_id>/prd.md`。
-3. `.superlooper/context/<session_id>/design/` 下已存在的设计文档。
-4. `.superlooper/manifests/<session_id>/module-split.json`。
-5. `.superlooper/manifests/<session_id>/execution_manifest.json`。
-6. `.superlooper/reports/<session_id>/` 下已存在的门禁报告。
+2. `.superlooper/context/<task_id>/prd.md`。
+3. `.superlooper/context/<task_id>/design/` 下已存在的设计文档。
+4. `.superlooper/manifests/<task_id>/module-split.json`。
+5. `.superlooper/manifests/<task_id>/execution_manifest.json`。
+6. `.superlooper/reports/<task_id>/` 下已存在的门禁报告。
 
 # 分析规则
 
@@ -49,28 +49,29 @@ tools: Read, Grep, Glob, Write
 - 必须列出受影响的 `.superlooper` 产物路径，不得把未分析的下游产物默认标为有效。
 - 必须列出受影响模块 ID；若无法安全归属到模块，`affected_modules` 写空数组，并将 `local_rerun_allowed` 置为 `false`。
 - 当变更影响项目分类、版本、项目根目录、源码根目录、构建工具或模块目标文件落点时，`requires_reinitialization` 必须为 `true`。
+- `requires_reinitialization=true` 时，`local_rerun_allowed` 必须为 `false`，且 `rollback_target_phase` 只能为 `prd`、`design` 或 `initialization`，不得回到 `run` 或 `requirement_alignment`。
 - 当变更影响 PRD P0、`MUST_NOT`、合规、安全、权限或数据正确性边界时，`rollback_target_phase` 必须为 `prd` 或 `design`，不得直接建议从编码阶段局部重跑。
 - 当同一路径归属、模块边界或已应用到工作区的文件存在不确定性时，`manual_approval_required` 必须为 `true`。
 - 只有受影响模块可被明确定位、目标文件边界未冲突、无需重新初始化且不需要重写 PRD 基线时，`local_rerun_allowed` 才能为 `true`。
 
 # 输出物
 
-必须输出 `.superlooper/reports/<session_id>/change_impact_report.md`。
+必须输出 `.superlooper/reports/<task_id>/change_impact_report.md`。
 
 报告第一个代码块必须是 YAML 状态块：
 
 ```yaml
-session_id: <session_id>
+task_id: <task_id>
 change_impact_status: PASS
 rollback_target_phase: design
 requires_reinitialization: false
 affected_artifacts:
-  - .superlooper/context/<session_id>/design/architecture.md
+  - .superlooper/context/<task_id>/design/architecture.md
 affected_modules:
   - report_export
 local_rerun_allowed: true
 manual_approval_required: true
-report_path: .superlooper/reports/<session_id>/change_impact_report.md
+report_path: .superlooper/reports/<task_id>/change_impact_report.md
 ```
 
 字段规则：
@@ -84,7 +85,7 @@ report_path: .superlooper/reports/<session_id>/change_impact_report.md
 | `affected_modules` | 只允许 `module-split.json` 中存在的模块 ID 数组 |
 | `local_rerun_allowed` | 只允许 `true` 或 `false` |
 | `manual_approval_required` | 只允许 `true` 或 `false` |
-| `report_path` | 固定为 `.superlooper/reports/<session_id>/change_impact_report.md` |
+| `report_path` | 固定为 `.superlooper/reports/<task_id>/change_impact_report.md` |
 
 # 禁止事项
 

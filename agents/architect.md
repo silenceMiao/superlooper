@@ -24,13 +24,13 @@ tools: Read, Grep, Glob, Write
 
 | 字段                  | 说明                                                             |
 | ------------------- | -------------------------------------------------------------- |
-| `session_id`        | 当前编排会话 ID                                                      |
-| `prd_path`          | 已审核 PRD 路径，默认 `.superlooper/context/<session_id>/prd.md`              |
-| `design_output_dir` | 设计文档输出目录，默认 `.superlooper/context/<session_id>/design/`               |
-| `ui_output_dir` | 已审核 UI 设计输出目录，默认 `.superlooper/context/<session_id>/ui/` |
-| `module_split_path` | 模块拆分清单输出路径，默认 `.superlooper/manifests/<session_id>/module-split.json`；初始化完成前不得作为必产物 |
+| `task_id`        | 当前任务唯一 ID                                                      |
+| `prd_path`          | 已审核 PRD 路径，默认 `.superlooper/context/<task_id>/prd.md`              |
+| `design_output_dir` | 设计文档输出目录，默认 `.superlooper/context/<task_id>/design/`               |
+| `ui_output_dir` | 已审核 UI 设计输出目录，默认 `.superlooper/context/<task_id>/ui/` |
+| `module_split_path` | 模块拆分清单输出路径，默认 `.superlooper/manifests/<task_id>/module-split.json`；初始化完成前不得作为必产物 |
 | `workspace_root`    | 目标后端项目根目录，用于识别语言、构建工具、源码根目录和测试根目录                              |
-| `initialization_advice_path` | 初始化建议输出路径，默认 `.superlooper/context/<session_id>/design/initialization-advice.md` |
+| `initialization_advice_path` | 初始化建议输出路径，默认 `.superlooper/context/<task_id>/design/initialization-advice.md` |
 | `initialization_report` | 初始化报告路径，初始化完成后生成正式 `module-split.json` 时必须读取 |
 | `feedback_report` | 可选，设计审核未通过反馈记录路径 |
 | `design_revision` | 可选，设计重生成轮次 |
@@ -112,16 +112,16 @@ tools: Read, Grep, Glob, Write
 
 ### 0. 上游自校对报告
 
-必须输出 `.superlooper/reports/<session_id>/upstream_alignment.md`，对照已审核 PRD 和已审核 UI 产物校验设计文档、初始化建议和初始化后 `module-split.json`。第一个 YAML 状态块必须包含：
+必须输出 `.superlooper/reports/<task_id>/upstream_alignment.md`，对照已审核 PRD 和已审核 UI 产物校验设计文档、初始化建议和初始化后 `module-split.json`。第一个 YAML 状态块必须包含：
 
 ```yaml
-session_id: <session_id>
+task_id: <task_id>
 upstream_alignment_status: PASS | FAIL | BLOCKED
 mismatch_count: <number>
 loop_required: true | false
 loop_target_phase: design
 blocking_decisions: []
-report_path: .superlooper/reports/<session_id>/upstream_alignment.md
+report_path: .superlooper/reports/<task_id>/upstream_alignment.md
 ```
 
 `PASS` 才允许主调度器自动进入初始化、module-split 校验和执行摘要生成；`FAIL` 必须说明返回的阶段；`BLOCKED` 必须列出需要用户决策的事项。
@@ -153,6 +153,17 @@ Java 后端项目的 `project-profile.md` 必须显式列出以下分层目录�
 ### 4. 初始化建议
 
 必须输出到 `initialization_advice_path` 或 `design_output_dir/initialization-advice.md`，说明建议项目分类、版本、项目根目录和初始化风险，不得直接写入目标项目根目录。
+
+该文件的第一个 YAML 代码块必须是扁平机器参数块，字段不得缺失、重命名或从 `project-profile.md` 隐式推断：
+
+```yaml
+task_id: <task_id>
+project_category: springboot
+project_version: springboot-3.x
+project_root: .
+```
+
+`project_category` 与 `project_version` 必须来自固定允许组合；`project_root` 必须为 `.` 或 workspace 内不进入 `.git`、`.hg`、`.svn`、`.claude`、`.superlooper`、`.env` 的安全相对路径。正文可在机器参数块之后说明初始化风险和选择依据。
 
 ### 5. 模块拆分清单
 
@@ -249,9 +260,9 @@ Java 后端项目的 `project-profile.md` 必须显式列出以下分层目录�
 - 明确并列模块必须拆成独立模块。
 - 每个模块描述必须足够让 `developer` 只看模块 payload、设计上下文和 Manifest 节点工作。
 - 每个模块如能确定目标文件，必须在 `target_files` 中列出目标后端项目根目录相对路径。
-- 当 `project_profile.project_mode=brownfield-selective` 时，每个模块必须声明 `allowed_existing_files`、`forbidden_files`、`integration_points`、`test_commands` 和 `overwrite_policy`；`allowed_existing_files` 必须是 `target_files` 子集，`forbidden_files` 不得与 `target_files` 重叠，`overwrite_policy` 固定为 `block_by_default`。
-- 不同模块的 `target_files` 不得声明同一路径；若多个模块需要修改同一文件，必须重新调整模块边界，指定唯一归属模块，或将共享改动拆为独立公共支撑模块，不得把冲突留到流程四、并行编码或合并流程处理。
-- 当模块声明 `target_files` 且文件职责可确定时，必须同步声明 `file_roles`，路径必须与 `target_files` 保持一致。
+- 当 `project_profile.project_mode=brownfield-selective` 时，每个模块必须声明 `allowed_existing_files`、`forbidden_files`、`integration_points`、`test_commands` 和 `overwrite_policy`；`allowed_existing_files` 必须按 Windows 等价路径判断为 `target_files` 子集，`forbidden_files` 不得按 Windows 等价路径与 `target_files` 重叠，`overwrite_policy` 固定为 `block_by_default`。
+- 同一模块内及不同模块间的 `target_files` 均不得声明同一 Windows 等价路径；比较时统一 `/` 与 `\\`、忽略大小写，并移除每个路径段末尾的点和空格。若多个模块需要修改同一物理文件，必须重新调整模块边界，指定唯一归属模块，或将共享改动拆为独立公共支撑模块，不得把冲突留到流程四、并行编码或合并流程处理。
+- 当模块声明 `target_files` 且文件职责可确定时，必须同步声明 `file_roles`；`file_roles[].path` 的成员关系、重复检查和对 `target_files` 的覆盖完整性均按同一 Windows 等价路径规则判断。
 - Java 后端项目的 `target_files` 必须按标准分层生成：控制层放 `controller`，服务接口放 `service`，服务实现放 `service/impl`，数据库映射接口放 `dao`，业务对象与公共支撑放 `module/{beans,common,aop,core,vo,security,log}`，工具类放 `utils/{inner,outer}`，Mapper XML 放 `src/main/resources/mapper` 且文件名使用 `***-mapper.xml`。
 - Java、Go、Lua、Python 等后端项目都必须复用当前项目既有源码根目录和测试根目录，不新造与项目结构不一致的目录。
 - 不允许把整份 PRD 或原始需求直接塞入单个模块 payload。
@@ -272,7 +283,7 @@ Java 后端项目的 `project-profile.md` 必须显式列出以下分层目录�
 | 开放问题检查 | `OPEN-*` 已按默认处理方式处理，并保留追溯 |
 | 范围边界检查 | `MUST_NOT` 未进入模块范围、API、DDL 或目标文件 |
 | 文件落点检查 | `target_files` 使用目标后端项目根目录相对路径 |
-| 模块边界冲突检查 | 不同模块的 `target_files` 不存在重复路径 |
+| 模块边界冲突检查 | 同一模块内及不同模块间的 `target_files` 不存在 Windows 等价重复路径；`allowed_existing_files`、`forbidden_files`、`file_roles[].path` 关系字段使用同一等价规则 |
 | Java 分层检查 | Java 文件落点符合标准目录 |
 | 可测试性检查 | P0 模块具备 `acceptance_refs` 或 `test_focus` |
 | UI 追溯检查 | 前端相关模块保留 `ui_refs`、`interaction_refs`、`component_refs`、`ui_acceptance_refs` |
@@ -291,4 +302,4 @@ Java 后端项目的 `project-profile.md` 必须显式列出以下分层目录�
 - 不创建 `execution_manifest.json`，该文件由主会话生成。
 - 不创建动态 `module_*` agent。
 - 不修改目标项目根目录业务文件。
-- 所有输出路径必须来自 payload 或 `.superlooper/context/<session_id>/`、`.superlooper/manifests/<session_id>/` 默认约定。
+- 所有输出路径必须来自 payload 或 `.superlooper/context/<task_id>/`、`.superlooper/manifests/<task_id>/` 默认约定。
