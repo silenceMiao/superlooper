@@ -19,7 +19,7 @@ Superlooper 是同时适用于 Claude Code 与 Codex 的 AI 并行编排插件�
 ### Claude Code
 
 ```text
-/plugin marketplace add <owner>/superAI-marketplace
+/plugin marketplace add silenceMiao/superAI-marketplace
 /plugin install superlooper@superAI-marketplace
 /superlooper:spl:doctor
 /superlooper:spl requirements.md [--task-name "商城后台"]
@@ -28,7 +28,7 @@ Superlooper 是同时适用于 Claude Code 与 Codex 的 AI 并行编排插件�
 ### Codex
 
 ```text
-codex plugin marketplace add <owner>/superAI-marketplace --ref main
+codex plugin marketplace add silenceMiao/superAI-marketplace --ref main
 codex plugin add superlooper@superAI-marketplace
 $superlooper-doctor
 $superlooper requirements.md [--task-name "商城后台"]
@@ -46,9 +46,6 @@ Python 3.9+ 是 Superlooper 的 `workflow runtime dependency`，不是 Claude Co
 
 系统设计阶段的 `initialization-advice.md` 以第一个 YAML 参数块声明 `task_id`、`project_category`、`project_version` 和 `project_root`。Claude Code 与 Codex 都会先校验该参数块，再完整传给初始化脚本；缺失或非法参数会阻断，adapter 不会从自然语言或项目画像猜测。
 
-Superlooper 使用 MIT 许可证发布。
-<!-- public-readme:end -->
-
 ## 安装产物选择
 
 普通用户使用 `superlooper-<version>-install.zip` 或已发布的 `superAI-marketplace`。`superlooper-<version>-source.zip` 用于源码审计和开发验证，不是普通用户安装入口。
@@ -60,7 +57,7 @@ Superlooper 使用 MIT 许可证发布。
 添加并安装已发布 Marketplace：
 
 ```text
-/plugin marketplace add <owner>/superAI-marketplace
+/plugin marketplace add silenceMiao/superAI-marketplace
 /plugin install superlooper@superAI-marketplace
 ```
 
@@ -75,7 +72,7 @@ Superlooper 使用 MIT 许可证发布。
 添加并安装同一个已发布 Marketplace：
 
 ```text
-codex plugin marketplace add <owner>/superAI-marketplace --ref main
+codex plugin marketplace add silenceMiao/superAI-marketplace --ref main
 codex plugin add superlooper@superAI-marketplace
 ```
 
@@ -108,11 +105,38 @@ python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)"
 
 Doctor 的 runtime probe 失败记为 `Doctor 未启动：runtime prerequisite unavailable`，不表示插件结构、源码或发布物失败。
 
+## 工作流程概览
+
+Superlooper 按以下七个流程推进任务：
+
+1. 确认需求文件、创建 task，并初始化 `.superlooper/` 运行目录。
+2. 生成 PRD，完成需求追溯和第一次人工审核。
+3. 生成 UI 规格、页面地图、交互流程和 HTML 预览，完成第二次人工审核。
+4. 生成系统设计、初始化建议和模块拆分；`standard` 模式自动完成初始化和模块清单校验。
+5. 生成唯一的 `execution_manifest.json`、动态模块 Agent 和执行摘要，完成第三次人工审核。
+6. 并行实现模块，执行产物契约校验和代码审查。
+7. 完成合并、集成测试、受控应用、交付报告和需求反向校对，等待第四次人工审核后结束任务。
+
+`standard` 模式只保留四个人工审核点。`strict_review` 模式增加设计、初始化和模块拆分等逐阶段审核，但不会绕过代码审查、测试、apply 冲突阻断或最终需求反向校对。
+
 ## 新建任务与身份
 
 Task 是用户工作项，使用 `task_id/task_name` 标识；task state（兼容名称 session state）是该任务的持久化 workflow 状态。Agent session / parent session 只表示实际 Claude Code 或 Codex 运行会话及其权限。`session_id` 仅用于旧状态兼容。
 
 在目标项目根目录创建真实需求文件，例如 `requirements.md`。不要把需求正文直接写入命令参数。
+
+```markdown
+# 商城后台
+
+开发一个商城后台管理系统。
+
+## 核心功能
+
+- 商品管理
+- 订单管理
+- 用户管理
+- 权限管理
+```
 
 Claude Code：
 
@@ -159,8 +183,9 @@ $superlooper requirements.md [--task-name "商城后台"]
 Claude Code：
 
 ```text
-/superlooper:spl:resume <task_id>
 /superlooper:spl:status <task_id>
+/superlooper:spl:resume <task_id>
+/superlooper:spl:prd <requirement_path> [task_id]
 /superlooper:spl:ui <task_id>
 /superlooper:spl:design <task_id>
 /superlooper:spl:run <task_id>
@@ -169,8 +194,9 @@ Claude Code：
 Codex：
 
 ```text
-$superlooper-resume <task_id>
 $superlooper-status <task_id>
+$superlooper-resume <task_id>
+$superlooper-prd <requirement_path> [task_id]
 $superlooper-ui <task_id>
 $superlooper-design <task_id>
 $superlooper-run <task_id>
@@ -180,12 +206,40 @@ $superlooper-run <task_id>
 
 ## 升级与卸载
 
-升级后先运行对应平台 doctor，再按 `task_id` 恢复旧任务：
+### Claude Code 升级
+
+更新 Marketplace 和 user-scope 插件：
+
+```text
+/plugin marketplace update superAI-marketplace
+/plugin update superlooper@superAI-marketplace
+```
+
+Claude Code 不会在当前运行会话中热加载更新后的插件。升级完成后启动新会话，再运行：
 
 ```text
 /superlooper:spl:doctor
 /superlooper:spl:resume <task_id>
 ```
+
+如果执行摘要已经生成，但新动态 Agent 尚未被当前会话发现，任务会保持 `READY_FOR_APPROVAL`。启动新会话、执行完整 namespace 的 `/superlooper:spl:resume <task_id>`，然后重新回复 `按此执行`；不要使用旧的 `/spl:resume` 安装态命令。
+
+### Codex 升级
+
+更新 Marketplace：
+
+```bash
+codex plugin marketplace upgrade superAI-marketplace
+```
+
+需要重新安装当前发布版本时执行：
+
+```bash
+codex plugin remove superlooper@superAI-marketplace
+codex plugin add superlooper@superAI-marketplace
+```
+
+启动新的 Codex session 后运行：
 
 ```text
 $superlooper-doctor
@@ -196,10 +250,23 @@ $superlooper-resume <task_id>
 
 Codex 卸载命令：
 
-```text
+```bash
 codex plugin remove superlooper@superAI-marketplace
 codex plugin marketplace remove superAI-marketplace
 ```
+
+## 冲突与失败恢复
+
+Superlooper 默认不会覆盖目标工作区中同路径、不同内容的既有文件。apply 发生冲突时：
+
+1. 查看 `.superlooper/reports/<task_id>/apply_conflict_report.json`。
+2. 确认保留现有文件、调整模块产物，或明确授权覆盖指定文件。
+3. 完成人工处理后回复 `应用冲突已处理，重新应用`。
+4. 使用 status 或 resume 命令继续当前 task，不要重新创建任务。
+
+只有用户显式授权时，底层 apply 才允许使用 `--overwrite-file <relative_path>` 或 `--overwrite-existing`。默认冲突阻断策略始终保持启用。
+
+代码审查或测试失败时，分别回复 `代码审查未通过，返回修正`、`测试未通过，返回修正`。深层需求变更会先生成影响分析报告，只有用户回复 `影响分析通过，执行局部重跑` 后，才会重跑已批准范围。
 
 ## 常见问题
 
@@ -216,3 +283,8 @@ codex plugin marketplace remove superAI-marketplace
 | merge 或 apply 报告真实路径越界 | 检查模块输出、merged 目录或目标工作区祖先是否包含指向授权根外的 symlink/junction；移除越界链接并重新运行对应阶段。 |
 | apply 发生冲突 | 人工处理冲突后回复 `应用冲突已处理，重新应用`；插件不会默认覆盖已有不同内容的目标文件。 |
 | apply I/O 失败 | 查看 `apply_report.json.rollback`。`success` 表示本次写入已回滚，可在修复 I/O 原因后重试；`partial` 表示必须使用保留的 backup 人工恢复。 |
+
+## 许可证
+
+Superlooper 使用 MIT 许可证发布。
+<!-- public-readme:end -->
