@@ -67,6 +67,12 @@ Python 3.9+ 是 Superlooper 的 `workflow runtime dependency`，不是 Claude Co
 /superlooper:spl:doctor
 ```
 
+检查已有 task 时可传入 `task_id`：
+
+```text
+/superlooper:spl:doctor <task_id>
+```
+
 ### Codex
 
 添加并安装同一个已发布 Marketplace：
@@ -82,6 +88,12 @@ codex plugin add superlooper@superAI-marketplace
 
 ```text
 $superlooper-doctor
+```
+
+检查已有 task 时可传入 `task_id`：
+
+```text
+$superlooper-doctor <task_id>
 ```
 
 ## Python 运行边界
@@ -118,6 +130,19 @@ Superlooper 按以下七个流程推进任务：
 7. 完成合并、集成测试、受控应用、交付报告和需求反向校对，等待第四次人工审核后结束任务。
 
 `standard` 模式只保留四个人工审核点。`strict_review` 模式增加设计、初始化和模块拆分等逐阶段审核，但不会绕过代码审查、测试、apply 冲突阻断或最终需求反向校对。
+
+## 推荐使用顺序
+
+1. 在目标项目根目录确认当前 Agent parent session 可以执行 Python 3.9+。
+2. 安装插件后启动新会话，先运行对应平台的 doctor。
+3. 创建真实的 `requirements.md`，通过总入口创建 task，并保存返回的 `task_id`。
+4. 审核 PRD 和 UI 产物，分别提交第一、第二个人工审核回复。
+5. 系统设计、初始化、模块拆分、Manifest 和动态 Agent 准备完成后，审核 `execution_summary.md`。
+6. Claude Code 如果提示当前会话未发现动态 Agent，启动新会话并恢复同一 task；Codex 继续在满足运行前提的 parent session 中执行。
+7. 提交第三个人工审核回复后，系统依次执行模块实现、代码审查、合并、测试和受控应用。
+8. 审核 `requirement_alignment_report.md` 并提交第四个人工审核回复，完成交付。
+
+任务中断时不要重新创建 task。使用 status 确认当前状态，再使用 resume 继续原 `task_id`。
 
 ## 新建任务与身份
 
@@ -174,7 +199,20 @@ $superlooper requirements.md [--task-name "商城后台"]
 
 `strict_review` 模式保留逐阶段审核：设计批准后进入 `initialization/waiting_review` 依次选择项目分类和版本；初始化完成并生成、校验 module-split 后回到 `design/waiting_review`，用户继续后才进入 `run/pending`。
 
-审核未通过时直接说明反馈。插件会基于当前 task 恢复，不需要重新启动完整流程。包含否定、暂停或修订语义的回复不会自动推进；语义不明确时会提供候选动作。若执行摘要为 BLOCKED，修复阻断项后必须明确回复 `重试执行摘要`；校验失败仍保持 BLOCKED，校验通过后回到待重新生成摘要状态。
+审核未通过时直接说明反馈。插件会基于当前 task 恢复，不需要重新启动完整流程。包含否定、暂停或修订语义的回复不会自动推进；语义不明确时会提供候选动作。
+
+常用返工和恢复回复：
+
+```text
+PRD未通过，按反馈重新分析：<具体反馈>
+UI设计未通过，按反馈重新设计：<具体反馈>
+执行摘要未通过，返回修正：<具体反馈>
+代码审查未通过，返回修正：<具体反馈>
+测试未通过，返回修正：<具体反馈>
+需求校对未通过，返回修正：<具体反馈>
+```
+
+若执行摘要为 BLOCKED，修复阻断项后必须明确回复 `重试执行摘要`；校验失败仍保持 BLOCKED，校验通过后回到待重新生成摘要状态。深层阶段发生需求或设计变更时，系统先生成影响分析；只有用户回复 `影响分析通过，执行局部重跑` 后，才会重跑已批准范围。
 
 质量门禁中的 PASS 不是纯文本声明：code review 的 `reviewed_modules` 必须非空、无重复且完整覆盖当前 Manifest 模块；`test_report.md` 必须记录测试命令、退出码、结果、关键输出和全部 `REQ-*`、`AC-*`、`DEC-*`、`OPEN-*` 覆盖证据；`requirement_alignment_report.md` 必须逐项给出实现、测试和交付证据。证据缺失、编号遗漏、未知编号或重复编号都会阻断后续阶段。
 
@@ -203,6 +241,26 @@ $superlooper-run <task_id>
 ```
 
 若目标项目只有一个 active task，也可在总入口输入“继续任务”等自然语言反馈。存在多个 active task 时，入口会显示 `task_name`（空值显示“未命名任务”）、`task_id` 和当前 phase/status；重名任务必须用 `task_id` 选择。
+
+## Claude Code 动态 Agent 新会话恢复
+
+执行清单阶段会为当前 task 生成 task-scoped 动态 Agent。Claude Code 不会在已运行会话中热加载这些新类型。若系统提示当前会话未发现全部动态 Agent：
+
+1. 保留当前 task 和 `.superlooper/` 运行目录，不要重新创建任务。
+2. 启动新的 Claude Code 会话。
+3. 在同一个目标项目根目录执行：
+
+```text
+/superlooper:spl:resume <task_id>
+```
+
+4. 确认恢复到 `run/waiting_review` 和 `READY_FOR_APPROVAL` 后，再次提交：
+
+```text
+按此执行
+```
+
+必须使用完整安装态 namespace `/superlooper:spl:resume <task_id>`，不要使用旧的 `/spl:resume <task_id>`。Codex 不需要 Claude 动态 Agent 类型发现，但仍必须满足 Python 和 parent session 权限前提。
 
 ## 升级与卸载
 
