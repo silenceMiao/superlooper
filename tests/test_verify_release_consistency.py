@@ -44,7 +44,10 @@ class VerifyReleaseConsistencyTest(unittest.TestCase):
         guide = self.source_root / "docs" / "USER_GUIDE.md"
         guide.parent.mkdir(parents=True, exist_ok=True)
         guide.write_text(
-            "<!-- public-readme:start -->\n# Superlooper\n{{USER_GUIDE_LINK}}\n{{SOURCE_MAINTENANCE_LINKS}}\n<!-- public-readme:end -->\n",
+            "# Superlooper 用户指南\n\n"
+            "<!-- public-readme:start -->\n"
+            "Superlooper\n"
+            "<!-- public-readme:end -->\n",
             encoding="utf-8",
         )
         (self.source_root / "README.md").write_text(extract_public_readme(guide, "source"), encoding="utf-8")

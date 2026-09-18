@@ -57,8 +57,13 @@ class PackagePluginReleaseBehaviorTest(unittest.TestCase):
         for relative_path in INSTALL_RUNTIME_REQUIRED_FILES:
             content = "---\ndescription: runtime file\n---\n\n# runtime file\n" if relative_path.startswith(("agents/", "commands/")) else "# runtime file\n"
             files.setdefault(relative_path, content)
-        files["docs/USER_GUIDE.md"] = "<!-- public-readme:start -->\n# test plugin\n<!-- public-readme:end -->\n"
-        files["README.md"] = "# test plugin\n"
+        files["docs/USER_GUIDE.md"] = "# Test Guide\n\n<!-- public-readme:start -->\ntest plugin\n<!-- public-readme:end -->\n"
+        files["README.md"] = (
+            "# Superlooper\n\n"
+            "> 想了解完整安装、运行和恢复流程：阅读 "
+            "[完整用户指南](docs/USER_GUIDE.md)。\n\n"
+            "test plugin\n"
+        )
         for relative_path, content in files.items():
             path = self.root / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -457,8 +462,13 @@ class BuildReleaseArchiveTest(unittest.TestCase):
         for relative_path in INSTALL_RUNTIME_REQUIRED_FILES:
             content = "---\ndescription: runtime file\n---\n\n# runtime file\n" if relative_path.startswith(("agents/", "commands/")) else "# runtime file\n"
             files.setdefault(relative_path, content)
-        files["docs/USER_GUIDE.md"] = "<!-- public-readme:start -->\n# test plugin\n<!-- public-readme:end -->\n"
-        files["README.md"] = "# test plugin\n"
+        files["docs/USER_GUIDE.md"] = "# Test Guide\n\n<!-- public-readme:start -->\ntest plugin\n<!-- public-readme:end -->\n"
+        files["README.md"] = (
+            "# Superlooper\n\n"
+            "> 想了解完整安装、运行和恢复流程：阅读 "
+            "[完整用户指南](docs/USER_GUIDE.md)。\n\n"
+            "test plugin\n"
+        )
         for relative_path, content in files.items():
             path = self.root / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)

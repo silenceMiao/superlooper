@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -278,6 +279,20 @@ class MarketplaceDoctorSmokeTest(unittest.TestCase):
             plugin_root = target_root / "plugins" / "superlooper"
             self.assertTrue((plugin_root / ".claude-plugin" / "plugin.json").is_file())
             self.assertTrue((plugin_root / ".codex-plugin" / "plugin.json").is_file())
+
+            readme = (plugin_root / "README.md").read_text(encoding="utf-8")
+            user_guide = (plugin_root / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
+            self.assertIn("[完整用户指南](docs/USER_GUIDE.md)", readme)
+            self.assertNotIn("docs/DEVELOPMENT.md", readme)
+            self.assertNotIn("docs/RELEASE.md", readme)
+            self.assertNotIn("{{", readme)
+            self.assertNotIn("{{", user_guide)
+            prose = re.sub(r"```.*?```", "", user_guide, flags=re.DOTALL)
+            self.assertEqual(
+                ["# Superlooper 用户指南"],
+                [line for line in prose.splitlines() if line.startswith("# ")],
+            )
+
             smoke = subprocess.run(
                 [sys.executable, "bin/spl", "doctor"],
                 cwd=plugin_root,

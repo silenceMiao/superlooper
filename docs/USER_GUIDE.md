@@ -1,13 +1,23 @@
 # Superlooper 用户指南
 
 <!-- public-readme:start -->
-# Superlooper
-
 Superlooper 是同时适用于 Claude Code 与 Codex 的 AI 并行编排插件。它把需求文档推进为 PRD、UI 设计、系统设计、并行实现、审查、测试与受控应用流程。
 
-> 想安装和使用插件：阅读本页“快速开始”或[完整用户指南]({{USER_GUIDE_LINK}})。
->
-> {{SOURCE_MAINTENANCE_LINKS}}
+## 运行前提
+
+两个平台都需要：
+
+1. Python 3.9+。
+2. `python` 命令在当前实际 Agent parent session 中可执行。
+3. 目标项目目录允许创建 `.superlooper/` 运行数据。
+4. Codex 完整工作流必须使用 `workspace-write`、non-ephemeral parent session。
+
+Superlooper不会：
+
+- 自动安装 Python；
+- 修改系统 `PATH`；
+- 扩大 sandbox 或工具权限；
+- 静默覆盖工作区中的同路径不同内容文件。
 
 ## 快速开始
 
@@ -34,25 +44,13 @@ $superlooper-doctor
 $superlooper requirements.md [--task-name "商城后台"]
 ```
 
-Python 3.9+ 是 Superlooper 的 `workflow runtime dependency`，不是 Claude Code 或 Codex 的插件安装标准。安装成功不等于当前 Agent 会话已满足运行依赖。
-
-深层需求或设计变更会先进入影响分析。报告生成时不会提前授权受影响模块；只有用户批准局部重跑后，审核 reducer 才把已校验范围写入 task state。所选模块产物校验完成后会清空局部范围，再进入完整 DAG 的全局审查、合并、测试和应用门禁。模块目标文件、`produced_files` 声明和实际产物文件均按 Windows 大小写不敏感、尾点/尾空格等价规则保持唯一。
-
-每次 merge 都从当前模块产物在空 staging 中重建完整快照，计算 `snapshot_digest` 后事务式发布快照和报告；冲突、路径越界、digest 或发布失败不会部分覆盖上一份成功快照。apply 写入前重新校验 merged tree digest，并把 create/overwrite、工作区验证和成功报告发布纳入同一可回滚事务。部分回滚必须保留 backup 并人工恢复。任何 failed apply 都不能通过最终门禁，最终完成同时要求需求校对报告通过和人工校对标志为 `true`。
-
-人工审核采用 fail-closed 语义：否定、暂停和修订表达不会因为包含“通过”或“执行”等子串而被误批准；普通 checkpoint 也不能直接离开 `waiting_review` 或构造最终批准状态。BLOCKED 执行摘要只接受明确“重试执行摘要”恢复；重试校验成功前保持阻断。代码审查 PASS 必须非空、完整覆盖当前 Manifest 的全部模块；测试和需求反向校对的 PASS 报告必须携带机器可读命令、退出码、关键输出及 PRD 稳定编号覆盖证据。
-
-四个系统质量节点使用经过 Schema 和 validator 校验的 object payload。Claude Code 正式静态 Agent 调用使用 `superlooper:<agent-name>` namespace，Manifest 与 runtime Agent 继续保存 `module_<module_id>` logical name；Claude 注册入口使用 task-scoped frontmatter name。用户提交“按此执行”前，当前 Claude Code 会话必须已发现全部 scoped name，否则 task 保持 READY_FOR_APPROVAL，并只提示启动新会话后执行 `/superlooper:spl:resume <task_id>` 再次提交“按此执行”。Codex 不执行该发现检查，继续使用只读 renderer 调度 logical Agent。
-
-系统设计阶段的 `initialization-advice.md` 以第一个 YAML 参数块声明 `task_id`、`project_category`、`project_version` 和 `project_root`。Claude Code 与 Codex 都会先校验该参数块，再完整传给初始化脚本；缺失或非法参数会阻断，adapter 不会从自然语言或项目画像猜测。
-
-## 安装产物选择
+### 安装产物选择
 
 普通用户使用 `superlooper-<version>-install.zip` 或已发布的 `superAI-marketplace`。`superlooper-<version>-source.zip` 用于源码审计和开发验证，不是普通用户安装入口。
 
-## 安装
+### 安装与 Doctor
 
-### Claude Code
+#### Claude Code
 
 添加并安装已发布 Marketplace：
 
@@ -73,7 +71,7 @@ Python 3.9+ 是 Superlooper 的 `workflow runtime dependency`，不是 Claude Co
 /superlooper:spl:doctor <task_id>
 ```
 
-### Codex
+#### Codex
 
 添加并安装同一个已发布 Marketplace：
 
@@ -117,33 +115,6 @@ python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)"
 
 Doctor 的 runtime probe 失败记为 `Doctor 未启动：runtime prerequisite unavailable`，不表示插件结构、源码或发布物失败。
 
-## 工作流程概览
-
-Superlooper 按以下七个流程推进任务：
-
-1. 确认需求文件、创建 task，并初始化 `.superlooper/` 运行目录。
-2. 生成 PRD，完成需求追溯和第一次人工审核。
-3. 生成 UI 规格、页面地图、交互流程和 HTML 预览，完成第二次人工审核。
-4. 生成系统设计、初始化建议和模块拆分；`standard` 模式自动完成初始化和模块清单校验。
-5. 生成唯一的 `execution_manifest.json`、动态模块 Agent 和执行摘要，完成第三次人工审核。
-6. 并行实现模块，执行产物契约校验和代码审查。
-7. 完成合并、集成测试、受控应用、交付报告和需求反向校对，等待第四次人工审核后结束任务。
-
-`standard` 模式只保留四个人工审核点。`strict_review` 模式增加设计、初始化和模块拆分等逐阶段审核，但不会绕过代码审查、测试、apply 冲突阻断或最终需求反向校对。
-
-## 推荐使用顺序
-
-1. 在目标项目根目录确认当前 Agent parent session 可以执行 Python 3.9+。
-2. 安装插件后启动新会话，先运行对应平台的 doctor。
-3. 创建真实的 `requirements.md`，通过总入口创建 task，并保存返回的 `task_id`。
-4. 审核 PRD 和 UI 产物，分别提交第一、第二个人工审核回复。
-5. 系统设计、初始化、模块拆分、Manifest 和动态 Agent 准备完成后，审核 `execution_summary.md`。
-6. Claude Code 如果提示当前会话未发现动态 Agent，启动新会话并恢复同一 task；Codex 继续在满足运行前提的 parent session 中执行。
-7. 提交第三个人工审核回复后，系统依次执行模块实现、代码审查、合并、测试和受控应用。
-8. 审核 `requirement_alignment_report.md` 并提交第四个人工审核回复，完成交付。
-
-任务中断时不要重新创建 task。使用 status 确认当前状态，再使用 resume 继续原 `task_id`。
-
 ## 新建任务与身份
 
 Task 是用户工作项，使用 `task_id/task_name` 标识；task state（兼容名称 session state）是该任务的持久化 workflow 状态。Agent session / parent session 只表示实际 Claude Code 或 Codex 运行会话及其权限。`session_id` 仅用于旧状态兼容。
@@ -185,6 +156,33 @@ $superlooper requirements.md [--task-name "商城后台"]
 新任务的 `task_id` 由脚本自动生成，格式为 `master-framework-YYYYMMDDHHMMSS`。它唯一且创建后不可变，是 state、目录、Manifest、报告、输出和恢复定位的关联键。用户新建任务时不填写 `task_id`。
 
 首次任务会在目标项目创建 `.superlooper/` 运行时目录。任务名称相同或未命名时，使用 `task_id` 消歧。
+
+## 工作流程概览
+
+Superlooper 按以下七个流程推进任务：
+
+1. 确认需求文件、创建 task，并初始化 `.superlooper/` 运行目录。
+2. 生成 PRD，完成需求追溯和第一次人工审核。
+3. 生成 UI 规格、页面地图、交互流程和 HTML 预览，完成第二次人工审核。
+4. 生成系统设计、初始化建议和模块拆分；`standard` 模式自动完成初始化和模块清单校验。
+5. 生成唯一的 `execution_manifest.json`、动态模块 Agent 和执行摘要，完成第三次人工审核。
+6. 并行实现模块，执行产物契约校验和代码审查。
+7. 完成合并、集成测试、受控应用、交付报告和需求反向校对，等待第四次人工审核后结束任务。
+
+`standard` 模式只保留四个人工审核点。`strict_review` 模式增加设计、初始化和模块拆分等逐阶段审核，但不会绕过代码审查、测试、apply 冲突阻断或最终需求反向校对。
+
+## 推荐使用顺序
+
+1. 在目标项目根目录确认当前 Agent parent session 可以执行 Python 3.9+。
+2. 安装插件后启动新会话，先运行对应平台的 doctor。
+3. 创建真实的 `requirements.md`，通过总入口创建 task，并保存返回的 `task_id`。
+4. 审核 PRD 和 UI 产物，分别提交第一、第二个人工审核回复。
+5. 系统设计、初始化、模块拆分、Manifest 和动态 Agent 准备完成后，审核 `execution_summary.md`。
+6. Claude Code 如果提示当前会话未发现动态 Agent，启动新会话并恢复同一 task；Codex 继续在满足运行前提的 parent session 中执行。
+7. 提交第三个人工审核回复后，系统依次执行模块实现、代码审查、合并、测试和受控应用。
+8. 审核 `requirement_alignment_report.md` 并提交第四个人工审核回复，完成交付。
+
+任务中断时不要重新创建 task。使用 status 确认当前状态，再使用 resume 继续原 `task_id`。
 
 ## 审核点
 
@@ -326,6 +324,14 @@ Superlooper 默认不会覆盖目标工作区中同路径、不同内容的既�
 
 代码审查或测试失败时，分别回复 `代码审查未通过，返回修正`、`测试未通过，返回修正`。深层需求变更会先生成影响分析报告，只有用户回复 `影响分析通过，执行局部重跑` 后，才会重跑已批准范围。
 
+## 执行与安全约束
+
+- 深层需求或设计变更先生成影响分析；只有用户批准后，才按已校验范围局部重跑。
+- merge 从模块产物重建完整快照；apply 会复核快照摘要并执行事务回滚，已有同路径不同内容文件默认阻断。
+- 人工审核采用 fail-closed；否定、暂停和修订表达不会被误判为批准，BLOCKED 执行摘要必须明确回复 `重试执行摘要`。
+- Claude Code 执行动态模块前必须在新会话发现 task-scoped Agent；Codex 使用 Manifest logical Agent，不执行该发现检查。
+- 初始化参数只读取已校验 `initialization-advice.md` 的机器参数块，不从自然语言或项目画像猜测。
+
 ## 常见问题
 
 | 现象 | 处理方式 |
@@ -345,4 +351,5 @@ Superlooper 默认不会覆盖目标工作区中同路径、不同内容的既�
 ## 许可证
 
 Superlooper 使用 MIT 许可证发布。
+
 <!-- public-readme:end -->
